@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import type { Dep } from './item.ts';
+import { MAX_UNPACKED_BYTES } from './limits.ts';
 import type { Http } from './sources.ts';
 
 export const sri512 = (buf: Uint8Array) => 'sha512-' + createHash('sha512').update(buf).digest('base64');
@@ -95,36 +96,50 @@ export function extractTarball(buf: Buffer, dest: string): void {
   const root = resolve(dest);
   let tar: Buffer;
   try {
-    tar = gunzipSync(buf);
-  } catch {
-    throw new BadPackage('bad gzip data');
+    tar = gunzipSync(buf, { maxOutputLength: MAX_UNPACKED_BYTES });
+  } catch (e) {
+    throw new BadPackage(e instanceof RangeError ? `unpacked tarball over ${MAX_UNPACKED_BYTES} bytes` : 'bad gzip data');
   }
-  for (const e of readEntries(tar, root)) {
-    if (e.type === '5') mkdirSync(e.target, { recursive: true });
-    else {
-      mkdirSync(dirname(e.target), { recursive: true });
-      writeFileSync(e.target, e.data);
+  const entries = readEntries(tar, root);
+  // 같은 tarball이면 매번 같은 자리에서 실패한다(파일 자리에 폴더 등). 다시 봐도 같으니 기준 미달이다.
+  try {
+    for (const e of entries) {
+      if (e.type === '5') mkdirSync(e.target, { recursive: true });
+      else {
+        mkdirSync(dirname(e.target), { recursive: true });
+        writeFileSync(e.target, e.data);
+      }
     }
+  } catch (e) {
+    throw new BadPackage(`cannot write tarball entries: ${(e as Error).message}`);
   }
 }
 
-const REVIEW_EXT = ['.js', '.mjs', '.cjs', '.ts', '.mts', '.cts', '.json', '.md'];
-
-// 검토자에게 넘길 글. 심볼릭 링크는 따라가지 않는다(패키지 밖 파일을 읽어 보내지 않게). 동작이 없는 .d.ts는 뺀다.
-export function reviewFiles(dir: string, exts = REVIEW_EXT): { path: string; text: string }[] {
+// 검토자에게 넘길 글. 심볼릭 링크는 따라가지 않는다(패키지 밖 파일을 읽어 보내지 않게). 동작이 없는 .d.ts·.map은 뺀다.
+// 확장자로 거르지 않는다: require('./data.txt')나 확장자 없는 파일, 묶인 node_modules에도 코드가 숨을 수 있다.
+// NUL 바이트가 든 파일은 바이너리라 내용 대신 경로만 마지막 한 항목('(binary files)')으로 넘긴다.
+export function reviewFiles(dir: string, exts?: string[]): { path: string; text: string }[] {
   const out: { path: string; text: string }[] = [];
+  const binary: string[] = [];
   const walk = (d: string) => {
     for (const name of readdirSync(d).sort()) {
       const p = join(d, name);
       const st = lstatSync(p);
-      if (st.isSymbolicLink() || name === 'node_modules') continue;
+      if (st.isSymbolicLink()) continue;
       if (st.isDirectory()) walk(p);
-      else if (st.isFile() && exts.includes(extname(name)) && !name.endsWith('.d.ts')) out.push({ path: relative(dir, p), text: readFileSync(p, 'utf8') });
+      else if (st.isFile() && !name.endsWith('.d.ts') && (exts ? exts.includes(extname(name)) : !name.endsWith('.map'))) {
+        const buf = readFileSync(p);
+        if (!exts && buf.includes(0)) binary.push(relative(dir, p));
+        else out.push({ path: relative(dir, p), text: buf.toString('utf8') });
+      }
     }
   };
   walk(dir);
+  if (binary.length) out.push({ path: '(binary files)', text: binary.join('\n') });
   return out;
 }
+
+const SECRETS = ['ANTHROPIC_API_KEY', 'GITHUB_TOKEN', 'GH_TOKEN'];
 
 // npm이 푼 의존성 전체의 판과 integrity. 패키지 자신은 뺀다.
 export function lockDeps(id: string, version: string): Dep[] {
@@ -132,22 +147,30 @@ export function lockDeps(id: string, version: string): Dep[] {
   try {
     writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'catalog-lock', private: true }));
     try {
-      execFileSync('npm', ['install', `${id}@${version}`, '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund'],
-        { cwd: dir, stdio: 'pipe' });
+      // git 의존성은 --ignore-scripts로도 막히지 않는다: pacote가 클론 안에서 npm을 또 띄우고, 클론의 .npmrc가 git=<받은 파일>로
+      // 바꿀 수 있다. CLI의 --git은 npm_config_git으로 아래 npm에도 넘어가 그 .npmrc보다 앞선다. 비밀도 넘기지 않는다.
+      execFileSync('npm', ['install', `${id}@${version}`, '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund', '--git=/usr/bin/false'],
+        { cwd: dir, stdio: 'pipe', env: Object.fromEntries(Object.entries(process.env).filter(([k]) => !SECRETS.includes(k))) });
     } catch (e) {
-      // 패키지·판이 없거나(E404, ETARGET) 의존성이 서로 맞지 않으면(ERESOLVE) 패키지 탓이다. 그 밖(네트워크·시간 초과)은 그대로 던진다.
+      // 패키지·판이 없거나(E404, ETARGET) 의존성이 서로 맞지 않거나(ERESOLVE) git 의존성이 있으면 패키지 탓이다.
+      // 그 밖(네트워크·시간 초과)은 그대로 던진다.
       const err = e as Error & { stdout?: Buffer; stderr?: Buffer };
       const out = `${err.stderr ?? ''}\n${err.stdout ?? ''}\n${err.message}`;
       const m = /npm (?:error|ERR!) code (E404|ETARGET|ERESOLVE)/.exec(out);
       if (m) throw new BadPackage(`npm error code ${m[1]}`);
+      if (/npm (?:error|ERR!) (?:command \/usr\/bin\/false |git dep preparation failed)/.test(out)) throw new BadPackage('git dependency');
       throw e;
     }
     const lock = JSON.parse(readFileSync(join(dir, 'package-lock.json'), 'utf8')) as
       { packages: Record<string, { version?: string; integrity?: string }> };
-    return Object.entries(lock.packages)
+    const deps = Object.entries(lock.packages)
       .filter(([k]) => k && k !== `node_modules/${id}`)
       .map(([k, v]) => ({ name: k.slice(k.lastIndexOf('node_modules/') + 'node_modules/'.length), version: v.version ?? '', integrity: v.integrity ?? '' }))
       .sort((a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version));
+    // 묶인(bundled)·git·file·원격 tarball 의존성은 sha512가 없어 판을 고정할 수 없다
+    const loose = deps.find((d) => !d.integrity.startsWith('sha512-'));
+    if (loose) throw new BadPackage(`dependency without sha512 integrity: ${loose.name}`);
+    return deps;
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
