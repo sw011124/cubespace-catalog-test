@@ -14,6 +14,8 @@
 
 **검증 기록:** 이 문서의 코드 블록은 2026-10-16에 임시 폴더에서 그대로 돌려 본 것이다. `vitest` 52 passed(네트워크 시험 1개는 `CATALOG_NET=1`로 따로 통과), `tsc --noEmit` 오류 0. 실제 출처로도 돌렸다(Claude만 가짜): skill은 두 저장소의 42개 가운데 19개가 들어가고 23개가 기준 미달(대부분 스크립트 포함·U-82, 라이선스 없음·크기 초과), 89초. MCP는 실제 Registry·npm·OSV·패키지 파일로 15개를 돌려 10개가 들어가고 모두 형식 검사를 통과했다(의존성 최대 134개, 검토 글 1개 평균 약 6.8만 자). 이때 GitHub API는 로그인 없는 한도(시간당 60회)에 걸려서 저장소 사실만 가짜로 넣었다. PR 단계 셸은 로컬 bare 저장소와 가짜 `gh`로 돌려 첫날 생성·다음 날 수정·항목 없는 날을 확인했다(Task 7 Step 3). 아직 하지 않은 것: 실제 Claude 호출(API 키 없음), ESLint, GitHub Actions 실행, 이 저장소의 workspace 배치 [실측 필요].
 
+**리뷰 수정:** Task 4~7의 코드 블록은 실행 중 리뷰로 고치기 전 판이다(BadPackage, tar 직접 읽기, 검토 답 형식 검사, Registry 삭제 내림, PR 본문 코드 조각, 열린 PR만 이어 가기, npm git 차단 등). 기준은 저장소 코드다.
+
 ## 이 계획의 위치
 
 | 단계 | 계획(이 파일) | 범위 | 언제 |
@@ -2544,7 +2546,7 @@ gh pr create --base main --title "feat: AI 확장 목록 1단계(목록 만들�
 | Actions 변수 | `CATALOG_APP_CLIENT_ID` = App의 Client ID |
 | Actions secret | `CATALOG_APP_PRIVATE_KEY` = App 개인 키(.pem 전체), `ANTHROPIC_API_KEY` = 팀 Claude API 키 |
 | 저장소 일반 설정 | "Allow auto-merge" 켬 |
-| `main` 규칙 | CI 통과 필수(이미 있음). MCP 폴더 검토: "Require review from Code Owners" 켬. 승인 수를 0으로 두고 Code Owners 검토만 요구할 수 있는지는 확인해야 한다 [실측 필요]. 승인 1 이상이 전체에 걸리면 skill PR도 사람이 승인해야 자동 병합된다 |
+| `main` 규칙 | 상태 검사 `check`(`.github/workflows/ci.yml`) 통과 필수. MCP 폴더 검토: "Require review from Code Owners" 켬. "Dismiss stale pull request approvals when new commits are pushed" 켬(MCP PR은 매일 새 항목과 함께 강제 푸시되므로 예전 승인이 새 항목까지 덮으면 안 된다). 승인 수를 0으로 두고 Code Owners 검토만 요구할 수 있는지는 확인해야 한다 [실측 필요]. 승인 1 이상이 전체에 걸리면 skill PR도 사람이 승인해야 자동 병합된다 |
 
 - [ ] **Step 6: 첫 판 목록을 seed로 만든다**
 

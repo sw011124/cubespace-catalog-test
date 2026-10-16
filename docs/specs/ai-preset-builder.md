@@ -35,7 +35,7 @@
 | 종류 | 첫 판 출처 | 다음 판 |
 |---|---|---|
 | MCP | 공식 MCP Registry `GET /v0.1/servers?updated_since=<시각>` | |
-| plugin·skill | Anthropic 마켓플레이스 `claude-plugins-official`, `claude-plugins-community`, `anthropics/skills` | GitHub star 검색, 그 밖의 마켓플레이스 |
+| plugin·skill | Anthropic 마켓플레이스 `claude-plugins-official`, `anthropics/skills` | `claude-plugins-community`, GitHub star 검색, 그 밖의 마켓플레이스 |
 | 프롬프트 | 모으지 않는다. 팀이 쓴 틀(6절) | |
 
 - MCP Registry는 preview라 데이터가 초기화될 수 있고 가동을 보장하지 않는다. 레지스트리는 보안 검사를 하지 않는다. 그래서 우리 검사(4.2·4.3절)를 따로 한다.
@@ -112,7 +112,7 @@
 | 단계 | 하는 일 |
 |---|---|
 | 목록 | 패키지 이름·판·`dist.integrity`(npm 레지스트리가 주는 sha512)와 의존성 전체의 이름·판·integrity를 담는다 |
-| 검토 | 크롤러와 Claude 검토자는 그 판의 실제 패키지 파일과 의존성을 본다(4.2·4.3절) |
+| 검토 | Claude 검토자는 그 판의 실제 패키지 파일(안에 묶인 `node_modules` 포함)을 본다. 풀린 의존성은 integrity로 판을 고정하고 OSV로 확인하지만 Claude가 읽지는 않는다(4.2·4.3절) |
 | 설치 | 앱이 관리 폴더에 설치한다. 설치 스크립트는 끈다(npm `ignore-scripts`). integrity가 목록 값과 다르면 버린다 |
 | 띄우기 | 앱이 넣은 고정 판 `node.exe`의 절대 경로 + 설치된 진입 파일의 절대 경로. `npx`를 쓰지 않는다 |
 | 실행 중 | 다시 받지 않는다. 그래서 검증한 판과 도는 판이 같다 |
@@ -152,20 +152,7 @@
 
 ### 4.8 목록 항목
 
-01 구성 2.1절의 `extensions` 표(`id, kind, name, version, sha256, source, updated_at`)에 더한다.
-
-| 필드 | 내용 |
-|---|---|
-| `kind` | `skill \| plugin \| mcp`에 `prompt`(6절 틀)를 더한다 |
-| `commit` | 저장소 커밋 SHA |
-| `package` | `{type, id, version, sha256}` 실제 설치 파일 |
-| `stars`, `forks`, `license`, `scorecard` | 4.2절 검사 값 |
-| `verified_at` | 마지막 검사 시각 |
-| `tags` | `{task, stage, rw, needs}` 4.4절. MCP의 `rw`는 `tools`에 둔다 |
-| `tools` | MCP만. `[{name, rw}]` 도구별 R/W |
-| `review` | `{verdict, summary}` 4.3절 |
-| `approval` | `auto \| team`. PR 번호는 git 기록으로 대신한다 |
-| `status` | `active \| superseded \| withdrawn` |
+필드는 [01 구성](../04-소프트웨어/01-구성.md) 2.1절 `extensions` 표가 기준이다(코드 `apps/server/src/catalog/item.ts`). `kind: prompt`(6절 틀)는 2·3단계에서 더한다.
 
 - 저장소 안에 항목당 파일 하나로 둔다(`apps/server/catalog/items/<kind>/<id>.json`). PR에서 읽기 쉽고 서로 덜 부딪힌다.
 - 앱은 내려받은 파일의 SHA-256이 목록 값과 다르면 버린다(01 구성 2.1절).
@@ -275,7 +262,7 @@
 - 자동 검사와 Claude 검토를 통과한 악성 MCP: 팀 승인이 마지막 관문이지만 사람도 놓친다. 화면에는 "검증됨"이 기준 통과라는 뜻이지 안전 보증이 아니라고 쓴다.
 - 자동 승인한 skill 안의 해로운 지시: 실행 격리로 쓸 수 있는 도구와 파일 범위가 줄지만, W 단계에서 작업 폴더 코드를 나쁘게 바꿀 수는 있다. 검토 단계와 판정이 일부를 잡는다.
 - PR 검토가 멈추는 경우(예: 학기 뒤): 목록에는 skill만 들어오고 MCP는 멈춘다.
-- npm 의존성 사슬: 패키지 하나가 의존성 수십 개를 끌고 올 수 있다. 의존성까지 판을 고정하고 검토해야 하므로, 크기 상한(4.2절)을 넘는 패키지는 사람이 보거나 뺀다.
+- npm 의존성 사슬: 패키지 하나가 의존성 수십 개를 끌고 올 수 있다. Claude는 패키지 자신의 파일(묶인 `node_modules` 포함)만 읽고, 풀린 의존성은 integrity로 판을 고정하고 OSV로 확인하지만 읽지는 않는다. 크기 상한(4.2절)을 넘는 패키지는 사람이 보거나 뺀다.
 - MCP Registry 초기화: 우리 목록은 우리 저장소에 따로 있어서, 새 항목이 안 들어오는 정도로 그친다.
 
 ## 12. 첫 판과 다음 판
