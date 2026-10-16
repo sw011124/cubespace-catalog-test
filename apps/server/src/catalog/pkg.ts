@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { extname, join, relative } from 'node:path';
+import { gunzipSync } from 'node:zlib';
 import type { Dep } from './item.ts';
 import type { Http } from './sources.ts';
 
@@ -21,8 +22,27 @@ export async function fetchTarball(http: Http, url: string, integrity: string): 
 
 export const unsafeNames = (names: string[]) => names.filter((n) => n.startsWith('/') || n.split('/').includes('..'));
 
+// 링크 항목은 풀지 않는다: tar 종류마다 링크 처리가 달라서 목록에서 막는다.
+// 헤더를 직접 읽어 종류를 보고, 허용하지 않는 종류가 있으면 풀기 전에 던진다.
+const TAR_OK_TYPES = ['0', '7', '5', 'x', 'g', 'L'];
+function checkTarTypes(tgz: Buffer): void {
+  const tar = gunzipSync(tgz);
+  for (let off = 0; off + 512 <= tar.length; ) {
+    const h = tar.subarray(off, off + 512);
+    if (h.every((b) => b === 0)) return;
+    const name = h.subarray(0, 100).toString('utf8').replace(/\0.*$/s, '');
+    const type = String.fromCharCode(h[156] || 48);
+    if (h[124] & 0x80) throw new Error(`unsupported tar size (base-256) for ${name}`);
+    const octal = h.subarray(124, 136).toString('ascii').replace(/\0.*$/s, '').trim();
+    if (!/^[0-7]+$/.test(octal)) throw new Error(`bad tar size for ${name}`);
+    if (!TAR_OK_TYPES.includes(type)) throw new Error(`unsupported tar entry ${name} (type ${JSON.stringify(type)})`);
+    off += 512 + Math.ceil(parseInt(octal, 8) / 512) * 512;
+  }
+}
+
 // 풀기 전에 목록을 보고 바깥으로 나가는 경로를 막는다.
 export function extractTarball(buf: Buffer, dest: string): void {
+  checkTarTypes(buf);
   const file = join(dest, '.pkg.tgz');
   writeFileSync(file, buf);
   const names = execFileSync('tar', ['-tzf', file], { encoding: 'utf8' }).split('\n').filter(Boolean);

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync, readFileSync } from 'node:fs';
+import { linkSync, mkdirSync, mkdtempSync, readdirSync, symlinkSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -15,7 +15,6 @@ function makeTarball(): Buffer {
   writeFileSync(join(src, 'package', 'dist', 'index.js'), 'export const a = 1;\n');
   writeFileSync(join(src, 'package', 'logo.png'), 'binary');
   writeFileSync(join(src, 'package', 'dist', 'index.d.ts'), 'export declare const a: number;');
-  symlinkSync('/etc/hosts', join(src, 'package', 'dist', 'leak.js'));
   execFileSync('tar', ['-czf', join(src, 'p.tgz'), '-C', src, 'package']);
   return readFileSync(join(src, 'p.tgz'));
 }
@@ -37,9 +36,37 @@ describe('tarball safety', () => {
   it('extracts and hands only regular text files to the reviewer, never symlinks', () => {
     const dest = tmp();
     extractTarball(makeTarball(), dest);
+    symlinkSync('/etc/hosts', join(dest, 'package', 'dist', 'leak.js'));
     const files = reviewFiles(join(dest, 'package'));
     expect(files.map((f) => f.path)).toEqual(['dist/index.js', 'package.json']);
     expect(files[0].text).toBe('export const a = 1;\n');
+  });
+});
+
+// 링크 항목(심볼릭·하드링크)은 풀기 전에 막고, 바깥에는 아무것도 쓰지 않는다.
+function archiveWith(setup: (pkg: string) => void): Buffer {
+  const src = tmp();
+  const pkg = join(src, 'package');
+  mkdirSync(pkg, { recursive: true });
+  writeFileSync(join(pkg, 'a.txt'), 'a');
+  setup(pkg);
+  execFileSync('tar', ['-czf', join(src, 'p.tgz'), '-C', src, 'package']);
+  return readFileSync(join(src, 'p.tgz'));
+}
+
+describe('link entries', () => {
+  it('refuses a symlink entry and extracts nothing', () => {
+    const buf = archiveWith((pkg) => symlinkSync('/etc/hosts', join(pkg, 'link')));
+    const dest = tmp();
+    expect(() => extractTarball(buf, dest)).toThrow('package/link');
+    expect(readdirSync(dest)).toEqual([]);
+  });
+
+  it('refuses a hardlink entry and extracts nothing', () => {
+    const buf = archiveWith((pkg) => linkSync(join(pkg, 'a.txt'), join(pkg, 'b.txt')));
+    const dest = tmp();
+    expect(() => extractTarball(buf, dest)).toThrow('unsupported tar entry');
+    expect(readdirSync(dest)).toEqual([]);
   });
 });
 
