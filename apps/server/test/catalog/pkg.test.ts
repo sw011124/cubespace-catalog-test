@@ -1,10 +1,10 @@
 import { execFileSync } from 'node:child_process';
-import { linkSync, mkdirSync, mkdtempSync, readdirSync, symlinkSync, writeFileSync, readFileSync } from 'node:fs';
+import { chmodSync, linkSync, mkdirSync, mkdtempSync, readdirSync, symlinkSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { gzipSync } from 'node:zlib';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { extractTarball, fetchTarball, lockDeps, reviewFiles, sri512, unsafeNames } from '../../src/catalog/pkg.ts';
+import { BadPackage, extractTarball, fetchTarball, lockDeps, reviewFiles, sri512, unsafeNames } from '../../src/catalog/pkg.ts';
 import { fakeHttp } from './fake.ts';
 
 const tmp = () => mkdtempSync(join(tmpdir(), 'pkg-test-'));
@@ -60,6 +60,7 @@ describe('link entries', () => {
     const buf = archiveWith((pkg) => symlinkSync('/etc/hosts', join(pkg, 'link')));
     const dest = tmp();
     expect(() => extractTarball(buf, dest)).toThrow('package/link');
+    expect(() => extractTarball(buf, dest)).toThrow(BadPackage);
     expect(readdirSync(dest)).toEqual([]);
   });
 
@@ -92,6 +93,34 @@ describe('header walk', () => {
       // 던져도 된다. 검사하는 것은 링크가 생기지 않았다는 점이다.
     }
     expect(readdirSync(dest, { recursive: true, withFileTypes: true }).filter((e) => e.isSymbolicLink())).toEqual([]);
+  });
+});
+
+// 가짜 npm을 PATH 앞에 두고 실패 종류별로 lockDeps가 무엇을 던지는지 본다.
+describe('lockDeps failures', () => {
+  const withFakeNpm = (code: string, fn: () => void) => {
+    const bin = tmp();
+    writeFileSync(join(bin, 'npm'), `#!/bin/sh\necho "npm error code ${code}" >&2\nexit 1\n`);
+    chmodSync(join(bin, 'npm'), 0o755);
+    const old = process.env.PATH;
+    process.env.PATH = `${bin}:${old}`;
+    try { fn(); } finally { process.env.PATH = old; }
+  };
+
+  it.each(['E404', 'ETARGET', 'ERESOLVE'])('turns npm %s into a BadPackage with that code', (code) => {
+    withFakeNpm(code, () => {
+      expect(() => lockDeps('x', '1.0.0')).toThrow(BadPackage);
+      expect(() => lockDeps('x', '1.0.0')).toThrow(`npm error code ${code}`);
+    });
+  });
+
+  it('rethrows other failures (network, timeout) as they are', () => {
+    withFakeNpm('ECONNRESET', () => {
+      let err: unknown;
+      try { lockDeps('x', '1.0.0'); } catch (e) { err = e; }
+      expect(err).toBeInstanceOf(Error);
+      expect(err).not.toBeInstanceOf(BadPackage);
+    });
   });
 });
 

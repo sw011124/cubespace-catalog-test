@@ -6,7 +6,7 @@ import { extname, join } from 'node:path';
 import { gate, type Facts } from './checks.ts';
 import { idFor, loadVocab, type Dep, type Item, type Kind } from './item.ts';
 import { MAX_NEW_PER_RUN, SKILL_TEXT_EXT } from './limits.ts';
-import { extractTarball, fetchTarball, reviewFiles, sha256 } from './pkg.ts';
+import { BadPackage, extractTarball, fetchTarball, reviewFiles, sha256 } from './pkg.ts';
 import { reviewItem, tagItem, type Ask, type ReviewFile } from './review.ts';
 import {
   detectLicense, githubRepo, npmVersion, osv, parseGithub, rawText, registryChanges, registryServer, scorecard, SKILL_REPOS, skillDirs,
@@ -30,6 +30,7 @@ export interface Summary {
   held: Note[]; rejected: Note[]; dropped: Note[]; errors: Note[]; capped: boolean;
 }
 
+const NOTE_MAX = 300;
 const SCRIPT_EXT = ['.py', '.sh', '.bash', '.js', '.mjs', '.cjs', '.ts', '.ps1', '.bat', '.cmd', '.rb', '.pl'];
 
 const readJson = <T>(p: string, fallback: T): T => (existsSync(p) ? JSON.parse(readFileSync(p, 'utf8')) : fallback);
@@ -67,6 +68,11 @@ export async function crawl(kind: Kind, env: Env, seeds?: string[]): Promise<Sum
     const n = noteOf(id, version, reasons);
     ({ drop: s.dropped, human: s.held, warn: s.held, reject: s.rejected })[decision].push(n);
   };
+  const withdraw = (it: Item) => {
+    writeJson(join(env.root, 'items', kind, `${it.id}.json`), { ...it, status: 'withdrawn', updated_at: startedAt });
+    items.set(it.id, { ...it, status: 'withdrawn', updated_at: startedAt });
+    s.withdrawn.push(it.id);
+  };
   // 새 항목의 Claude 검토 횟수 상한(설계 4.1절 5). 넘으면 다음 실행으로 넘긴다.
   const mayReview = (isNew: boolean) => {
     if (!isNew) return true;
@@ -76,7 +82,7 @@ export async function crawl(kind: Kind, env: Env, seeds?: string[]): Promise<Sum
   };
 
   const vocab = loadVocab(join(env.root, 'vocab.json'));
-  const base = { now: env.now, vocab, save, remember, mayReview, items, env };
+  const base = { now: env.now, vocab, save, remember, withdraw, mayReview, items, env };
 
   if (kind === 'mcp') {
     let cands: McpCandidate[] = [];
@@ -89,11 +95,15 @@ export async function crawl(kind: Kind, env: Env, seeds?: string[]): Promise<Sum
     for (const c of cands) {
       const id = idFor(c.name);
       const cur = items.get(id);
+      // Registry에서 deleted·deprecated가 되면 판이 그대로여도 내린다(설계 4.2절). 같은 판 건너뛰기보다 먼저 본다.
+      if (cur?.status === 'active' && (c.status === 'deleted' || c.status === 'deprecated')) { withdraw(cur); continue; }
       if (cur?.version === c.version || state.seen[id]?.version === c.version) continue;
       try {
         await mcpOne(base, c, id, cur);
       } catch (e) {
         const msg = (e as Error).message;
+        // 패키지 자체가 기준에 못 미치면 다시 봐도 같으니 기준 미달로 남긴다. 그 밖의 오류만 기준 시각을 멈춘다.
+        if (e instanceof BadPackage) { remember(id, c.version, 'drop', [msg]); continue; }
         s.errors.push(noteOf(id, c.version, [msg]));
         if (/^(403|429) /.test(msg)) break; // 한도에 걸리면 남은 것은 다음 실행으로
       }
@@ -128,12 +138,7 @@ export async function crawl(kind: Kind, env: Env, seeds?: string[]): Promise<Sum
         }
       }
     }
-    for (const it of items.values()) {
-      if (it.status === 'active' && !found.has(it.id)) {
-        writeJson(join(env.root, 'items', 'skill', `${it.id}.json`), { ...it, status: 'withdrawn', updated_at: startedAt });
-        s.withdrawn.push(it.id);
-      }
-    }
+    for (const it of [...items.values()]) if (it.status === 'active' && !found.has(it.id)) withdraw(it);
     state.since = startedAt;
   }
   writeJson(statePath, state);
@@ -143,6 +148,7 @@ export async function crawl(kind: Kind, env: Env, seeds?: string[]): Promise<Sum
 type Base = {
   now: Date; vocab: ReturnType<typeof loadVocab>; env: Env; items: Map<string, Item>;
   save: (it: Item, isNew: boolean) => void;
+  withdraw: (it: Item) => void;
   remember: (id: string, version: string, d: Decision, reasons: string[]) => void;
   mayReview: (isNew: boolean) => boolean;
 };
@@ -151,8 +157,8 @@ async function mcpOne(b: Base, c: McpCandidate, id: string, cur: Item | undefine
   const { env } = b;
   const at = env.now.toISOString();
   if (c.status === 'deleted' || c.status === 'deprecated') {
-    if (cur) b.save({ ...cur, status: 'withdrawn', updated_at: at }, false);
-    else b.remember(id, c.version, 'drop', [`registry status ${c.status}`]);
+    if (cur?.status === 'active') b.withdraw(cur);
+    else if (!cur) b.remember(id, c.version, 'drop', [`registry status ${c.status}`]);
     return;
   }
   const npm = await npmVersion(env.http, c.npm.id, c.npm.version);
@@ -161,12 +167,7 @@ async function mcpOne(b: Base, c: McpCandidate, id: string, cur: Item | undefine
   if (!gh) return b.remember(id, c.version, 'drop', ['no GitHub repository']);
   const repo = await githubRepo(env.http, gh.owner, gh.repo, env.token);
   if (!repo) return b.remember(id, c.version, 'drop', [`GitHub repository ${gh.owner}/${gh.repo} not found`]);
-  let deps: Dep[];
-  try {
-    deps = env.lock(c.npm.id, c.npm.version);
-  } catch (e) {
-    return b.remember(id, c.version, 'drop', [`npm could not resolve dependencies: ${String((e as Error).message).split('\n')[0]}`]);
-  }
+  const deps = env.lock(c.npm.id, c.npm.version); // 못 푸는 패키지는 BadPackage로 던져진다
   const vulns = await osv(env.http, [{ name: c.npm.id, version: c.npm.version }, ...deps]);
   const tgz = await fetchTarball(env.http, npm.tarball, npm.integrity);
   const dir = mkdtempSync(join(tmpdir(), 'catalog-pkg-'));
@@ -228,8 +229,13 @@ async function skillOne(b: Base, repo: string, rf: RepoFacts, d: SkillDir, id: s
 }
 
 export function summaryMarkdown(s: Summary, date: string): string {
+  // 이유·판에는 Claude 답, 오류 문구, Registry가 정한 글이 들어온다. 한 줄로 접고 코드 조각에 넣어 PR 본문을 깨거나 사람을 부르지 못하게 한다.
+  const code = (t: string) => {
+    const one = t.replace(/\s+/g, ' ').replace(/`/g, "'").trim();
+    return `\`${one.length > NOTE_MAX ? one.slice(0, NOTE_MAX) + '…' : one}\``;
+  };
   const list = (title: string, notes: Note[], max = 30) => notes.length
-    ? [`### ${title} ${notes.length}`, ...notes.slice(0, max).map((n) => `- \`${n.id}\` ${n.version}: ${n.reasons.join('; ')}`),
+    ? [`### ${title} ${notes.length}`, ...notes.slice(0, max).map((n) => `- \`${n.id}\` ${code(n.version)}: ${code(n.reasons.join('; '))}`),
        ...(notes.length > max ? [`- …그 밖에 ${notes.length - max}개`] : []), '']
     : [];
   return [

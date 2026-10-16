@@ -12,11 +12,14 @@ import type { Http } from './sources.ts';
 export const sri512 = (buf: Uint8Array) => 'sha512-' + createHash('sha512').update(buf).digest('base64');
 export const sha256 = (data: Uint8Array | string) => createHash('sha256').update(data).digest('hex');
 
+// 패키지 자체가 기준에 못 미침 — 기준 미달로 남기고 다시 보지 않는다
+export class BadPackage extends Error {}
+
 export async function fetchTarball(http: Http, url: string, integrity: string): Promise<Buffer> {
   const r = await http(url);
   if (!r.ok) throw new Error(`${r.status} ${url}`);
   const buf = Buffer.from(await r.arrayBuffer());
-  if (sri512(buf) !== integrity) throw new Error(`integrity mismatch for ${url}`);
+  if (sri512(buf) !== integrity) throw new BadPackage(`integrity mismatch for ${url}`);
   return buf;
 }
 
@@ -30,9 +33,9 @@ const str = (b: Buffer) => b.toString('utf8').replace(/\0.*$/s, '');
 
 function octalField(h: Buffer, from: number, to: number): number {
   const f = h.subarray(from, to);
-  if (f[0] & 0x80) throw new Error('unsupported tar size (base-256)');
+  if (f[0] & 0x80) throw new BadPackage('unsupported tar size (base-256)');
   const s = f.toString('ascii').replace(/[\0 ]+$/, '');
-  if (!/^[0-7]*$/.test(s)) throw new Error('bad tar size field');
+  if (!/^[0-7]*$/.test(s)) throw new BadPackage('bad tar size field');
   return s ? parseInt(s, 8) : 0;
 }
 
@@ -43,10 +46,10 @@ function paxRecords(data: Buffer): Map<string, string> {
     const sp = data.indexOf(0x20, pos);
     const lenStr = sp < 0 ? '' : data.subarray(pos, sp).toString('ascii');
     const len = /^\d+$/.test(lenStr) ? Number(lenStr) : 0;
-    if (!(len > 0) || pos + len > data.length) throw new Error('bad pax record');
+    if (!(len > 0) || pos + len > data.length) throw new BadPackage('bad pax record');
     const rec = data.subarray(sp + 1, pos + len - 1).toString('utf8');
     const eq = rec.indexOf('=');
-    if (eq < 0) throw new Error('bad pax record');
+    if (eq < 0) throw new BadPackage('bad pax record');
     out.set(rec.slice(0, eq), rec.slice(eq + 1));
     pos += len;
   }
@@ -65,9 +68,9 @@ function readEntries(tar: Buffer, root: string): Entry[] {
     const meta = type === 'x' || type === 'g' || type === 'L';
     const ps = pax.get('size');
     const size = meta || ps === undefined ? own : Number(/^\d+$/.test(ps) ? ps : NaN);
-    if (!Number.isFinite(size)) throw new Error('bad pax size');
+    if (!Number.isFinite(size)) throw new BadPackage('bad pax size');
     const start = off + 512;
-    if (start + size > tar.length) throw new Error('truncated tar entry');
+    if (start + size > tar.length) throw new BadPackage('truncated tar entry');
     const data = tar.subarray(start, start + size);
     off = start + Math.ceil(size / 512) * 512;
     if (type === 'x') pax = paxRecords(data);
@@ -78,10 +81,10 @@ function readEntries(tar: Buffer, root: string): Entry[] {
       const name = pax.get('path') ?? longName ?? (prefix ? `${prefix}/${base}` : base);
       pax = new Map();
       longName = undefined;
-      if (type !== '0' && type !== '7' && type !== '5') throw new Error(`unsupported tar entry ${name} (type "${type}")`);
-      if (unsafeNames([name]).length) throw new Error(`unsafe paths in tarball: ${name}`);
+      if (type !== '0' && type !== '7' && type !== '5') throw new BadPackage(`unsupported tar entry ${name} (type "${type}")`);
+      if (unsafeNames([name]).length) throw new BadPackage(`unsafe paths in tarball: ${name}`);
       const target = resolve(root, name);
-      if (!(target.startsWith(root + sep) || (type === '5' && target === root))) throw new Error(`unsafe paths in tarball: ${name}`);
+      if (!(target.startsWith(root + sep) || (type === '5' && target === root))) throw new BadPackage(`unsafe paths in tarball: ${name}`);
       out.push({ type, target, data });
     }
   }
@@ -90,7 +93,13 @@ function readEntries(tar: Buffer, root: string): Entry[] {
 
 export function extractTarball(buf: Buffer, dest: string): void {
   const root = resolve(dest);
-  for (const e of readEntries(gunzipSync(buf), root)) {
+  let tar: Buffer;
+  try {
+    tar = gunzipSync(buf);
+  } catch {
+    throw new BadPackage('bad gzip data');
+  }
+  for (const e of readEntries(tar, root)) {
     if (e.type === '5') mkdirSync(e.target, { recursive: true });
     else {
       mkdirSync(dirname(e.target), { recursive: true });
@@ -122,8 +131,17 @@ export function lockDeps(id: string, version: string): Dep[] {
   const dir = mkdtempSync(join(tmpdir(), 'catalog-lock-'));
   try {
     writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'catalog-lock', private: true }));
-    execFileSync('npm', ['install', `${id}@${version}`, '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund'],
-      { cwd: dir, stdio: 'pipe' });
+    try {
+      execFileSync('npm', ['install', `${id}@${version}`, '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund'],
+        { cwd: dir, stdio: 'pipe' });
+    } catch (e) {
+      // 패키지·판이 없거나(E404, ETARGET) 의존성이 서로 맞지 않으면(ERESOLVE) 패키지 탓이다. 그 밖(네트워크·시간 초과)은 그대로 던진다.
+      const err = e as Error & { stdout?: Buffer; stderr?: Buffer };
+      const out = `${err.stderr ?? ''}\n${err.stdout ?? ''}\n${err.message}`;
+      const m = /npm (?:error|ERR!) code (E404|ETARGET|ERESOLVE)/.exec(out);
+      if (m) throw new BadPackage(`npm error code ${m[1]}`);
+      throw e;
+    }
     const lock = JSON.parse(readFileSync(join(dir, 'package-lock.json'), 'utf8')) as
       { packages: Record<string, { version?: string; integrity?: string }> };
     return Object.entries(lock.packages)

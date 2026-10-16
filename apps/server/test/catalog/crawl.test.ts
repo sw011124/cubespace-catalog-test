@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { crawl, summaryMarkdown, type Env } from '../../src/catalog/crawl.ts';
 import { checkItem, loadVocab } from '../../src/catalog/item.ts';
 import { MAX_NEW_PER_RUN } from '../../src/catalog/limits.ts';
-import { sri512 } from '../../src/catalog/pkg.ts';
+import { BadPackage, sri512 } from '../../src/catalog/pkg.ts';
 import type { Ask } from '../../src/catalog/review.ts';
 import { fakeHttp } from './fake.ts';
 
@@ -112,12 +112,46 @@ describe('crawl mcp', () => {
     const root = catalogRoot();
     const routes = mcpRoutes([{ name: 'io.github.acme/gone', stars: 300 }, { name: 'io.github.acme/tangle', stars: 300 }], tarball());
     delete routes['https://registry.npmjs.org/@acme/gone/1.0.0'];
-    const lock = (id: string) => { if (id === '@acme/tangle') throw new Error('npm error code ERESOLVE\nmore'); return []; };
+    const lock = (id: string) => { if (id === '@acme/tangle') throw new BadPackage('npm error code ERESOLVE'); return []; };
     const s = await crawl('mcp', { ...env(root, routes, []), lock });
-    expect(s.dropped.map((n) => n.reasons[0])).toEqual([
-      'npm @acme/gone@1.0.0 not found', 'npm could not resolve dependencies: npm error code ERESOLVE']);
+    expect(s.dropped.map((n) => n.reasons[0])).toEqual(['npm @acme/gone@1.0.0 not found', 'npm error code ERESOLVE']);
     expect(s.errors).toEqual([]);
     expect(JSON.parse(readFileSync(join(root, 'state', 'mcp.json'), 'utf8')).since).toBe(NOW.toISOString());
+  });
+
+  it('treats a transient dependency-resolution failure as an error, not a drop, and holds `since`', async () => {
+    const root = catalogRoot();
+    const routes = mcpRoutes([{ name: 'io.github.acme/gh', stars: 300 }], tarball());
+    const lock = () => { throw new Error('Command failed: npm install\nnpm error code ECONNRESET'); };
+    const s = await crawl('mcp', { ...env(root, routes, []), lock });
+    expect(s.errors.map((n) => n.id)).toEqual(['io-github-acme-gh']);
+    expect(s.dropped).toEqual([]);
+    const state = JSON.parse(readFileSync(join(root, 'state', 'mcp.json'), 'utf8'));
+    expect(state.since).toBeNull();
+    expect(state.seen).toEqual({});
+  });
+
+  it('drops a package whose tarball fails its integrity check instead of blocking `since` forever', async () => {
+    const root = catalogRoot();
+    const routes = mcpRoutes([{ name: 'io.github.acme/gh', stars: 300 }], tarball());
+    routes['https://registry.npmjs.org/@acme/gh/1.0.0'] = { dist: { integrity: I, tarball: 'https://r.example/p.tgz' } };
+    const s = await crawl('mcp', env(root, routes, []));
+    expect(s.dropped.map((n) => n.reasons[0])).toEqual(['integrity mismatch for https://r.example/p.tgz']);
+    expect(s.errors).toEqual([]);
+    expect(JSON.parse(readFileSync(join(root, 'state', 'mcp.json'), 'utf8')).since).toBe(NOW.toISOString());
+  });
+
+  it('withdraws an active server the registry now lists as deleted, even at the same version', async () => {
+    const root = catalogRoot();
+    const routes = mcpRoutes([{ name: 'io.github.acme/gh', stars: 300 }], tarball());
+    await crawl('mcp', env(root, routes, []));
+    const page = routes[`${R}?limit=100&version=latest`] as { servers: { _meta: Record<string, { status: string }> }[] };
+    page.servers[0]._meta['io.modelcontextprotocol.registry/official'].status = 'deleted';
+    routes[`${R}?limit=100&version=latest&updated_since=2026-10-16T03%3A17%3A00.000Z`] = page;
+    const s = await crawl('mcp', { ...env(root, routes, []), now: new Date('2026-10-17T03:17:00Z') });
+    expect(s.withdrawn).toEqual(['io-github-acme-gh']);
+    expect(s.updated).toEqual([]);
+    expect(JSON.parse(readFileSync(join(root, 'items', 'mcp', 'io-github-acme-gh.json'), 'utf8')).status).toBe('withdrawn');
   });
 
   it('reviews a server only once even if the registry lists it twice in one run', async () => {
@@ -153,6 +187,18 @@ describe('crawl mcp', () => {
     expect(s.capped).toBe(true);
     expect(JSON.parse(readFileSync(join(root, 'state', 'mcp.json'), 'utf8')).since).toBeNull();
     expect(summaryMarkdown(s, '2026-10-16')).toContain('다음 실행에서 본다');
+  });
+});
+
+describe('summaryMarkdown', () => {
+  it('renders untrusted notes as one line inside code spans', () => {
+    const s = {
+      kind: 'mcp' as const, added: [], updated: [], withdrawn: [], held: [], rejected: [], dropped: [], capped: false,
+      errors: [{ id: 'x', version: '1.0.0\n## fake', reasons: ['line one\n\n@someone see #12 `rm -rf`', 'y'.repeat(400)] }],
+    };
+    const line = summaryMarkdown(s, '2026-10-16').split('\n').find((l) => l.startsWith('- `x`'))!;
+    expect(line).toMatch(/^- `x` `1\.0\.0 ## fake`: `line one @someone see #12 'rm -rf'; y+…`$/);
+    expect(summaryMarkdown(s, '2026-10-16')).not.toContain('\n## fake');
   });
 });
 
@@ -214,9 +260,19 @@ describe('crawl skill', () => {
     await crawl('skill', { http: fakeHttp(skillRoutes()).http, ask: skillAsk([]), now: NOW, root, lock: () => [] });
     const routes = skillRoutes();
     delete routes['https://api.github.com/repos/anthropics/skills/branches/main'];
+    // 깨진 출처 다음 출처에 skill이 하나 있다: 거기까지 계속 본다.
+    const other = 'anthropics/claude-plugins-official';
+    routes[raw(other, '.claude-plugin/marketplace.json')] = { plugins: [{ name: 'y', source: './', skills: ['./skills/extra'] }] };
+    routes[`${GH}/${other}/git/trees/root-${other}?recursive=1`] = { truncated: false, tree: [
+      treeNode('skills'), treeNode('skills/extra'), blob('skills/extra/SKILL.md'), blob('skills/extra/LICENSE.txt'),
+    ] };
+    routes[raw(other, 'skills/extra/SKILL.md')] = '---\nname: extra\n---\nSummarize the diff.';
+    routes[raw(other, 'skills/extra/LICENSE.txt')] = 'MIT License';
     const s = await crawl('skill', { http: fakeHttp(routes).http, ask: skillAsk([]), now: NOW, root, lock: () => [] });
     expect(s.errors.map((n) => n.id)).toEqual(['anthropics-skills']);
+    expect(s.added).toEqual(['anthropics-claude-plugins-official-extra']);
     expect(s.withdrawn).toEqual([]);
+    expect(JSON.parse(readFileSync(join(root, 'items', 'skill', 'anthropics-skills-good.json'), 'utf8')).status).toBe('active');
   });
 
   it('withdraws a skill that disappeared from its repository', async () => {
