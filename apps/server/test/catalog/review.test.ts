@@ -34,6 +34,16 @@ describe('reviewItem', () => {
     expect(r.summary).toContain(why);
   });
 
+  it('gives an mcp with no tools rw W, not R', async () => {
+    const r = await reviewItem(answer(ok({ tools: [] })), 'mcp', files);
+    expect(r).toMatchObject({ verdict: 'warn', rw: 'W' });
+  });
+
+  it.each([['null', null], ['missing fields', { verdict: 'ok' }]])('turns a malformed answer into warn and W: %s', async (_name, json) => {
+    const r = await reviewItem(answer(json), 'mcp', files);
+    expect(r).toMatchObject({ verdict: 'warn', rw: 'W', summary: '검토 못 함: malformed review answer' });
+  });
+
   it('turns a refusal or failure into warn so a person looks at it', async () => {
     const r = await reviewItem(async () => ({ ok: false, why: 'refused (cyber)' }), 'mcp', files);
     expect(r).toMatchObject({ verdict: 'warn', rw: 'W', summary: '검토 못 함: refused (cyber)' });

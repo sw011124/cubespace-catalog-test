@@ -57,14 +57,22 @@ const REVIEW_SCHEMA = {
 export interface Finding { file: string; line: number; kind: string; note: string }
 export interface Review { verdict: Verdict; rw: RW; tools: Tool[]; findings: Finding[]; summary: string }
 
+const isRW = (v: unknown) => v === 'R' || v === 'W';
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null;
+const isReview = (v: unknown): v is Review => isObj(v) && ['reject', 'warn', 'ok'].includes(v.verdict as string) && isRW(v.rw)
+  && Array.isArray(v.tools) && v.tools.every((t) => isObj(t) && typeof t.name === 'string' && isRW(t.rw))
+  && Array.isArray(v.findings) && v.findings.every(isObj) && typeof v.summary === 'string';
+
 export async function reviewItem(ask: Ask, kind: Kind, files: ReviewFile[]): Promise<Review> {
   const r = await ask(prompt('reviewer'), itemText(kind, files), REVIEW_SCHEMA);
-  if (!r.ok) return { verdict: 'warn', rw: 'W', tools: [], findings: [], summary: `검토 못 함: ${r.why}` };
-  const out = r.json as Review;
+  const cannot = (why: string): Review => ({ verdict: 'warn', rw: 'W', tools: [], findings: [], summary: `검토 못 함: ${why}` });
+  if (!r.ok) return cannot(r.why);
+  if (!isReview(r.json)) return cannot('malformed review answer');
+  const out = r.json;
   const lines = new Map(files.map((f) => [f.path, f.text.split('\n').length]));
   const real = (f: Finding) => f.line >= 1 && f.line <= (lines.get(f.file) ?? 0);
   const downgrade = (why: string): Review => ({ ...out, verdict: 'warn', summary: `${out.summary} (warn: ${why})` });
-  if (kind === 'mcp') out.rw = out.tools.some((t) => t.rw === 'W') ? 'W' : 'R';
+  if (kind === 'mcp') out.rw = out.tools.length > 0 && out.tools.every((t) => t.rw === 'R') ? 'R' : 'W';
   if (out.verdict !== 'ok') return out;
   if (!out.findings.some((f) => f.kind === 'ok_evidence' && real(f))) return downgrade('ok without evidence lines that exist');
   if (kind === 'mcp' && out.tools.length === 0) return downgrade('no tools found');
