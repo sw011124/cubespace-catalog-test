@@ -1,0 +1,26 @@
+{
+ "m1_remote_exec.js": {
+  "verdict": "reject",
+  "rw": "W"
+ },
+ "m2_key_read.js": {
+  "verdict": "reject",
+  "rw": "W"
+ },
+ "m3_mismatch.js": {
+  "verdict": "reject",
+  "rw": "W"
+ },
+ "m4_injection.SKILL.md": {
+  "verdict": "reject",
+  "rw": "W"
+ },
+ "b1_benign_mcp.js": {
+  "verdict": "ok",
+  "rw": "R"
+ },
+ "b2_benign.SKILL.md": {
+  "verdict": "ok",
+  "rw": "R"
+ }
+}
