@@ -28,6 +28,7 @@ export interface Note { id: string; version: string; reasons: string[] }
 export interface Summary {
   kind: Kind; added: string[]; updated: string[]; withdrawn: string[];
   held: Note[]; rejected: Note[]; dropped: Note[]; errors: Note[]; newChips: string[]; capped: boolean;
+  team?: Note[]; // 추가·갱신한 MCP. 팀이 PR 본문에서 판정·R/W·검토 요약을 본다
   seedFirst?: boolean;
 }
 
@@ -64,6 +65,10 @@ export async function crawl(kind: Kind, env: Env, seeds?: string[]): Promise<Sum
     writeJson(join(env.root, 'items', kind, `${it.id}.json`), it);
     items.set(it.id, it); // 같은 실행에서 같은 판이 또 나오면 건너뛴다
     (isNew ? s.added : s.updated).push(it.id);
+    if (kind === 'mcp') {
+      const w = it.tools.filter((t) => t.rw === 'W').length;
+      (s.team ??= []).push(noteOf(it.id, it.version, [`${it.review.verdict} · rw ${it.rw} · W 도구 ${w}/${it.tools.length}`, it.review.summary]));
+    }
   };
   const remember = (id: string, version: string, decision: Decision, reasons: string[]) => {
     state.seen[id] = { version, decision, reasons };
@@ -255,6 +260,7 @@ export function summaryMarkdown(s: Summary, date: string): string {
     ...(s.capped ? ['- 새 항목 검토 상한에 걸려 남은 것은 다음 실행에서 본다'] : []),
     ...(s.seedFirst ? ['- 기준 시각이 없어 아무것도 보지 않았다. 먼저 `seed mcp <이름…>`으로 첫 판을 정한다'] : []),
     '',
+    ...list('팀 검토할 MCP', s.team ?? []),
     ...list('사람 확인 필요', s.held),
     ...list('거절', s.rejected),
     ...list('오류(다음 실행에서 다시 본다)', s.errors),

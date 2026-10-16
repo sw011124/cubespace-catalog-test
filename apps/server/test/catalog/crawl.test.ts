@@ -90,6 +90,9 @@ describe('crawl mcp', () => {
     const item = JSON.parse(readFileSync(join(root, 'items', 'mcp', 'io-github-acme-gh.json'), 'utf8'));
     expect(checkItem(item, loadVocab(join(root, 'vocab.json')))).toEqual([]);
     expect(item).toMatchObject({ approval: 'team', rw: 'W', package: { deps: [{ name: 'zod' }] } });
+    // 팀이 PR 본문만 보고도 판정·R/W·검토 요약을 알 수 있어야 한다.
+    expect(summaryMarkdown(s, '2026-10-16')).toMatch(
+      new RegExp(`### 팀 검토할 MCP 1\\n- \`io-github-acme-gh\` \`1\\.0\\.0\`: \`${item.review.verdict} · rw ${item.rw} · W 도구 \\d+/\\d+; `));
     const state = JSON.parse(readFileSync(join(root, 'state', 'mcp.json'), 'utf8'));
     expect(state.since).toBe(NOW.toISOString());
     expect(state.seen['io-github-acme-tiny'].decision).toBe('drop');
