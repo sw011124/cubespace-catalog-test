@@ -36,9 +36,14 @@ interface RegistryEntry {
   _meta?: Record<string, { status?: string } | undefined>;
 }
 
+// 이름·판은 npm 레지스트리 URL과 npm 명령에 그대로 들어간다. 정확한 이름·semver만 받는다
+// (예: 판 'git+https://…/../../18.3.1'은 fetch에는 다른 패키지로, npm에는 git 의존성으로 읽힌다).
+const NPM_NAME = /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/;
+const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
 function candidateOf({ server: s, _meta }: RegistryEntry): McpCandidate | null {
   const npm = s.packages?.find((p) => p.registryType === 'npm' && p.transport?.type === 'stdio' && p.identifier && p.version);
-  if (!npm) return null;
+  if (!npm || npm.identifier!.length > 214 || !NPM_NAME.test(npm.identifier!) || !SEMVER.test(npm.version!)) return null;
   return {
     name: s.name,
     version: s.version,

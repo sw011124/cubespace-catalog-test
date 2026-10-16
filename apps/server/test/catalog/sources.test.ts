@@ -32,6 +32,21 @@ describe('registryChanges', () => {
         repo: null, source: `${R}/io.github.d%2Fold/versions/3.0.0` },
     ]);
   });
+
+  // npm 이름·판은 URL과 npm 명령에 그대로 들어간다. 정확한 이름·semver가 아니면 후보로 받지 않는다.
+  it('skips servers whose npm name or version is not exact', async () => {
+    const entry = (identifier: string, version: string) => ({ server: { name: `io.github.x/${identifier.length}`, version: '1.0.0',
+      packages: [{ registryType: 'npm', identifier, version, transport: { type: 'stdio' } }] }, _meta: meta('active') });
+    const { http } = fakeHttp({ [`${R}?limit=100&version=latest`]: { servers: [
+      entry('react', 'git+https://evil.example/r.git/../../../../18.3.1'),
+      entry('react', '^18.3.1'),
+      entry('../react', '18.3.1'),
+      entry('React', '18.3.1'),
+      entry('x'.repeat(215), '1.0.0'),
+      entry('@scope/ok.name', '1.2.3-rc.1+build.5'),
+    ], metadata: {} } });
+    expect((await registryChanges(http, null)).map((c) => `${c.npm.id}@${c.npm.version}`)).toEqual(['@scope/ok.name@1.2.3-rc.1+build.5']);
+  });
 });
 
 describe('registryServer and npmVersion', () => {
