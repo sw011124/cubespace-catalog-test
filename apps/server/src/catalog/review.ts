@@ -82,7 +82,8 @@ export async function reviewItem(ask: Ask, kind: Kind, files: ReviewFile[]): Pro
 }
 
 export async function tagItem(ask: Ask, vocab: Vocab, kind: Kind, files: ReviewFile[]): Promise<Tags & { new_chips: string[] }> {
-  const arr = (vals: string[]) => ({ type: 'array', items: { enum: vals }, uniqueItems: true });
+  // 구조화 출력은 uniqueItems를 400으로 거절해서, 겹친 칩은 아래 keep에서 뺀다.
+  const arr = (vals: string[]) => ({ type: 'array', items: { enum: vals } });
   const schema = {
     type: 'object', additionalProperties: false, required: ['task', 'stage', 'capability', 'needs_shell', 'windows', 'new_chips'],
     properties: {
@@ -94,6 +95,6 @@ export async function tagItem(ask: Ask, vocab: Vocab, kind: Kind, files: ReviewF
   const r = await ask(prompt('tagger'), itemText(kind, files), schema);
   if (!r.ok) throw new Error(`tagging failed: ${r.why}`);
   const t = r.json as Tags & { new_chips: string[] };
-  const keep = (vals: string[], allowed: string[]) => vals.filter((v) => allowed.includes(v));
+  const keep = (vals: string[], allowed: string[]) => [...new Set(vals.filter((v) => allowed.includes(v)))];
   return { ...t, task: keep(t.task, vocab.task), stage: keep(t.stage, vocab.stage), capability: keep(t.capability, vocab.capability) };
 }

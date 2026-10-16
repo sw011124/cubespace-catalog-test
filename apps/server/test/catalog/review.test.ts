@@ -87,4 +87,34 @@ describe('tagItem', () => {
     expect(schema?.properties.task.items.enum).toEqual(['bugfix']);
     expect(t).toMatchObject({ task: ['bugfix'], stage: ['fix'], new_chips: ['ci'] });
   });
+
+  it('drops repeated chips itself (the API rejects uniqueItems)', async () => {
+    const t = await tagItem(answer({ task: ['bugfix', 'bugfix'], stage: ['fix', 'fix'], capability: ['github', 'github'],
+      needs_shell: false, windows: 'unknown', new_chips: [] }), vocab, 'skill', files);
+    expect(t).toMatchObject({ task: ['bugfix'], stage: ['fix'], capability: ['github'] });
+  });
+});
+
+// 구조화 출력은 배열 제약(minItems 0·1 말고)·숫자·문자열 제약을 400으로 거절한다(2026-10-16 실제 호출에서 uniqueItems가 400).
+describe('structured output schemas', () => {
+  const banned = ['uniqueItems', 'maxItems', 'minimum', 'maximum', 'multipleOf', 'minLength', 'maxLength'];
+  const badKeys = (s: unknown, path = '$'): string[] => {
+    if (Array.isArray(s)) return s.flatMap((v, i) => badKeys(v, `${path}[${i}]`));
+    if (typeof s !== 'object' || s === null) return [];
+    return Object.entries(s).flatMap(([k, v]) => [
+      ...(banned.includes(k) || (k === 'minItems' && v !== 0 && v !== 1) ? [`${path}.${k}`] : []),
+      ...(k === 'enum' ? [] : badKeys(v, `${path}.${k}`)),
+    ]);
+  };
+  it('reviewer and tagger schemas use only keywords the API accepts', async () => {
+    const schemas: unknown[] = [];
+    const ask: Ask = async (_s, _u, sc) => {
+      schemas.push(sc);
+      return { ok: true, json: { ...ok(), task: [], stage: [], capability: [], needs_shell: false, windows: 'unknown', new_chips: [] } };
+    };
+    await reviewItem(ask, 'mcp', files);
+    await tagItem(ask, { task: ['bugfix'], stack: [], capability: ['github'], stage: ['plan'] }, 'mcp', files);
+    expect(schemas).toHaveLength(2);
+    expect(schemas.flatMap((s) => badKeys(s))).toEqual([]);
+  });
 });
