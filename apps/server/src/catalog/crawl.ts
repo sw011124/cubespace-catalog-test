@@ -27,7 +27,8 @@ interface State { since: string | null; seen: Record<string, { version: string; 
 export interface Note { id: string; version: string; reasons: string[] }
 export interface Summary {
   kind: Kind; added: string[]; updated: string[]; withdrawn: string[];
-  held: Note[]; rejected: Note[]; dropped: Note[]; errors: Note[]; capped: boolean;
+  held: Note[]; rejected: Note[]; dropped: Note[]; errors: Note[]; newChips: string[]; capped: boolean;
+  seedFirst?: boolean;
 }
 
 const NOTE_MAX = 300;
@@ -48,13 +49,14 @@ function loadItems(root: string, kind: Kind): Map<string, Item> {
 const noteOf = (id: string, version: string, reasons: string[]): Note => ({ id, version, reasons });
 
 // seeds가 있으면(mcp만) 기준 시각과 상관없이 그 서버들만 보고, 기준 시각이 비어 있으면 지금으로 정한다.
-// 첫 실행을 seed로 하지 않으면 Registry 전체를 처음부터 알파벳 순으로 검토하게 된다.
+// seed도 기준 시각도 없이 돌면 Registry 전체를 처음부터 알파벳 순으로 검토하게 되므로, 아무것도 쓰지 않고 seed부터 하라고만 남긴다.
 export async function crawl(kind: Kind, env: Env, seeds?: string[]): Promise<Summary> {
   const statePath = join(env.root, 'state', `${kind}.json`);
-  mkdirSync(join(env.root, 'state'), { recursive: true });
   const state = readJson<State>(statePath, { since: null, seen: {} });
+  const s: Summary = { kind, added: [], updated: [], withdrawn: [], held: [], rejected: [], dropped: [], errors: [], newChips: [], capped: false };
+  if (kind === 'mcp' && !seeds && !state.since) return { ...s, seedFirst: true };
+  mkdirSync(join(env.root, 'state'), { recursive: true });
   const items = loadItems(env.root, kind);
-  const s: Summary = { kind, added: [], updated: [], withdrawn: [], held: [], rejected: [], dropped: [], errors: [], capped: false };
   const startedAt = env.now.toISOString();
   let reviewsOfNew = 0;
 
@@ -82,7 +84,7 @@ export async function crawl(kind: Kind, env: Env, seeds?: string[]): Promise<Sum
   };
 
   const vocab = loadVocab(join(env.root, 'vocab.json'));
-  const base = { now: env.now, vocab, save, remember, withdraw, mayReview, items, env };
+  const base = { now: env.now, vocab, save, remember, withdraw, mayReview, items, env, newChips: s.newChips };
 
   if (kind === 'mcp') {
     let cands: McpCandidate[] = [];
@@ -95,6 +97,8 @@ export async function crawl(kind: Kind, env: Env, seeds?: string[]): Promise<Sum
     for (const c of cands) {
       const id = idFor(c.name);
       const cur = items.get(id);
+      // idFor는 이름을 줄여서 다른 Registry 이름이 같은 id가 될 수 있다. 남의 항목을 내리거나 덮어쓰지 않는다.
+      if (cur && cur.name !== c.name) { s.dropped.push(noteOf(id, c.version, [`id collision with ${cur.name}`])); continue; }
       // Registry에서 deleted·deprecated가 되면 판이 그대로여도 내린다(설계 4.2절). 같은 판 건너뛰기보다 먼저 본다.
       if (cur?.status === 'active' && (c.status === 'deleted' || c.status === 'deprecated')) { withdraw(cur); continue; }
       if (cur?.version === c.version || state.seen[id]?.version === c.version) continue;
@@ -139,14 +143,14 @@ export async function crawl(kind: Kind, env: Env, seeds?: string[]): Promise<Sum
       }
     }
     for (const it of [...items.values()]) if (it.status === 'active' && !found.has(it.id)) withdraw(it);
-    state.since = startedAt;
+    // skill은 기준 시각을 쓰지 않으므로 바꾸지 않는다. 시각만 바뀐 상태 파일로 매일 PR이 생겨 자동 병합되지 않게.
   }
   writeJson(statePath, state);
   return s;
 }
 
 type Base = {
-  now: Date; vocab: ReturnType<typeof loadVocab>; env: Env; items: Map<string, Item>;
+  now: Date; vocab: ReturnType<typeof loadVocab>; env: Env; items: Map<string, Item>; newChips: string[];
   save: (it: Item, isNew: boolean) => void;
   withdraw: (it: Item) => void;
   remember: (id: string, version: string, d: Decision, reasons: string[]) => void;
@@ -185,10 +189,13 @@ async function mcpOne(b: Base, c: McpCandidate, id: string, cur: Item | undefine
     if (review.verdict === 'reject') return b.remember(id, c.version, 'reject', [review.summary]);
     if (review.tools.length === 0) return b.remember(id, c.version, 'warn', [review.summary]);
     const tags = await tagItem(env.ask, b.vocab, 'mcp', files);
+    b.newChips.push(...tags.new_chips);
     b.save({
       id, kind: 'mcp', name: c.name, version: c.version, sha256: sha256(tgz), source: c.source, updated_at: at,
       commit: null, package: { type: 'npm', id: c.npm.id, version: c.npm.version, integrity: npm.integrity, deps },
-      stars: repo.stars, forks: repo.forks, license: repo.license!, scorecard: await scorecard(env.http, gh.owner, gh.repo),
+      stars: repo.stars, forks: repo.forks, license: repo.license!,
+      // Scorecard는 있으면 쓰는 값이다(4.2절). 실패해도 이미 받은 검토를 버리지 않는다.
+      scorecard: await scorecard(env.http, gh.owner, gh.repo).catch(() => null),
       verified_at: at, tags: { task: tags.task, stage: tags.stage, capability: tags.capability, needs_shell: tags.needs_shell, windows: tags.windows },
       rw: review.rw, tools: review.tools, review: { verdict: review.verdict, summary: review.summary },
       approval: 'team', status: 'active',
@@ -218,6 +225,7 @@ async function skillOne(b: Base, repo: string, rf: RepoFacts, d: SkillDir, id: s
   // 자동 승인은 ok인 skill만(설계 4.5절). warn은 PR 본문에 남기고 사람이 따로 올린다.
   if (review.verdict !== 'ok') return b.remember(id, d.treeSha, review.verdict, [review.summary]);
   const tags = await tagItem(env.ask, b.vocab, 'skill', files);
+  b.newChips.push(...tags.new_chips);
   b.save({
     id, kind: 'skill', name: d.name, version: d.treeSha,
     sha256: sha256(files.map((f) => `${f.path}\0${f.text}`).join('\0')),
@@ -238,17 +246,20 @@ export function summaryMarkdown(s: Summary, date: string): string {
     ? [`### ${title} ${notes.length}`, ...notes.slice(0, max).map((n) => `- \`${n.id}\` ${code(n.version)}: ${code(n.reasons.join('; '))}`),
        ...(notes.length > max ? [`- …그 밖에 ${notes.length - max}개`] : []), '']
     : [];
+  const chips = [...new Set(s.newChips)];
   return [
     `## catalog(${s.kind}) ${date}`, '',
     `- 추가 ${s.added.length}${s.added.length ? ': ' + s.added.map((i) => `\`${i}\``).join(', ') : ''}`,
     `- 갱신 ${s.updated.length}${s.updated.length ? ': ' + s.updated.map((i) => `\`${i}\``).join(', ') : ''}`,
-    `- 내림(withdrawn) ${s.withdrawn.length}`,
+    `- 내림(withdrawn) ${s.withdrawn.length}${s.withdrawn.length ? ': ' + s.withdrawn.map(code).join(', ') : ''}`,
     ...(s.capped ? ['- 새 항목 검토 상한에 걸려 남은 것은 다음 실행에서 본다'] : []),
+    ...(s.seedFirst ? ['- 기준 시각이 없어 아무것도 보지 않았다. 먼저 `seed mcp <이름…>`으로 첫 판을 정한다'] : []),
     '',
     ...list('사람 확인 필요', s.held),
     ...list('거절', s.rejected),
     ...list('오류(다음 실행에서 다시 본다)', s.errors),
     ...list('기준 미달', s.dropped, 20),
+    ...(chips.length ? [`### 새 칩 제안 ${chips.length}`, ...chips.map((c) => `- ${code(c)}`), ''] : []),
     '"검증됨"은 기준을 통과했다는 뜻이지 안전 보증이 아니다(설계 11절).',
   ].join('\n') + '\n';
 }

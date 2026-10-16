@@ -20,6 +20,16 @@ function catalogRoot() {
   return root;
 }
 
+// seed를 한 뒤의 mcp 목록: 기준 시각이 있어야 crawl이 Registry를 본다.
+const SINCE = '2026-10-15T03:17:00.000Z';
+const PAGE = `${R}?limit=100&version=latest&updated_since=${encodeURIComponent(SINCE)}`;
+function mcpRoot() {
+  const root = catalogRoot();
+  mkdirSync(join(root, 'state'));
+  writeFileSync(join(root, 'state', 'mcp.json'), JSON.stringify({ since: SINCE, seen: {} }));
+  return root;
+}
+
 function tarball(): Buffer {
   const src = mkdtempSync(join(tmpdir(), 'tgz-'));
   mkdirSync(join(src, 'package'));
@@ -29,7 +39,7 @@ function tarball(): Buffer {
 }
 
 // 검토자와 태그 붙이기를 흉내 낸다. 받은 지시문의 첫 줄로 누구인지 가린다.
-function fakeAsk(calls: string[]): Ask {
+function fakeAsk(calls: string[], chips: string[] = []): Ask {
   return async (system) => {
     if (system.includes('보안 검토자')) {
       calls.push('review');
@@ -39,13 +49,13 @@ function fakeAsk(calls: string[]): Ask {
       } };
     }
     calls.push('tag');
-    return { ok: true, json: { task: ['bugfix'], stage: ['plan', 'implement'], capability: ['github'], needs_shell: false, windows: 'unknown', new_chips: [] } };
+    return { ok: true, json: { task: ['bugfix'], stage: ['plan', 'implement'], capability: ['github'], needs_shell: false, windows: 'unknown', new_chips: chips } };
   };
 }
 
 function mcpRoutes(servers: { name: string; stars: number }[], tgz: Buffer) {
   const routes: Record<string, unknown> = {
-    [`${R}?limit=100&version=latest`]: { servers: servers.map(({ name }) => ({
+    [PAGE]: { servers: servers.map(({ name }) => ({
       server: { name, version: '1.0.0', repository: { url: `https://github.com/acme/${name.split('/')[1]}` },
         packages: [{ registryType: 'npm', identifier: `@acme/${name.split('/')[1]}`, version: '1.0.0', transport: { type: 'stdio' } }] },
       _meta: { 'io.modelcontextprotocol.registry/official': { status: 'active' } },
@@ -68,7 +78,7 @@ const env = (root: string, routes: Record<string, unknown>, calls: string[]): En
 
 describe('crawl mcp', () => {
   it('adds a server that passes every check as a valid team-approved item, then skips it next run', async () => {
-    const root = catalogRoot();
+    const root = mcpRoot();
     const calls: string[] = [];
     const routes = mcpRoutes([{ name: 'io.github.acme/gh', stars: 300 }, { name: 'io.github.acme/tiny', stars: 3 }], tarball());
 
@@ -85,14 +95,14 @@ describe('crawl mcp', () => {
     expect(state.seen['io-github-acme-tiny'].decision).toBe('drop');
 
     // 다음 날 Registry가 같은 판을 다시 돌려줘도(updated_since) 이미 있는 판이라 건너뛴다.
-    routes[`${R}?limit=100&version=latest&updated_since=2026-10-16T03%3A17%3A00.000Z`] = routes[`${R}?limit=100&version=latest`];
+    routes[`${R}?limit=100&version=latest&updated_since=2026-10-16T03%3A17%3A00.000Z`] = routes[PAGE];
     const again = await crawl('mcp', { ...env(root, routes, calls), now: new Date('2026-10-17T03:17:00Z') });
     expect([again.added, again.updated, again.dropped]).toEqual([[], [], []]);
     expect(calls).toHaveLength(2);
   });
 
   it('drops a server whose GitHub repository is gone, and stops at the first rate limit without moving `since`', async () => {
-    const root = catalogRoot();
+    const root = mcpRoot();
     const routes = mcpRoutes([{ name: 'io.github.acme/a', stars: 300 }, { name: 'io.github.acme/b', stars: 300 }, { name: 'io.github.acme/c', stars: 300 }], tarball());
     delete routes['https://api.github.com/repos/acme/a'];
     const base = fakeHttp(routes).http;
@@ -105,11 +115,11 @@ describe('crawl mcp', () => {
     expect(s.dropped.map((n) => [n.id, n.reasons[0]])).toEqual([['io-github-acme-a', 'GitHub repository acme/a not found']]);
     expect(s.errors.map((n) => n.id)).toEqual(['io-github-acme-b']);
     expect(seen.some((u) => u.includes('acme/c'))).toBe(false);
-    expect(JSON.parse(readFileSync(join(root, 'state', 'mcp.json'), 'utf8')).since).toBeNull();
+    expect(JSON.parse(readFileSync(join(root, 'state', 'mcp.json'), 'utf8')).since).toBe(SINCE);
   });
 
   it('drops (not errors) a server whose npm package is gone or whose dependencies cannot be resolved', async () => {
-    const root = catalogRoot();
+    const root = mcpRoot();
     const routes = mcpRoutes([{ name: 'io.github.acme/gone', stars: 300 }, { name: 'io.github.acme/tangle', stars: 300 }], tarball());
     delete routes['https://registry.npmjs.org/@acme/gone/1.0.0'];
     const lock = (id: string) => { if (id === '@acme/tangle') throw new BadPackage('npm error code ERESOLVE'); return []; };
@@ -120,19 +130,19 @@ describe('crawl mcp', () => {
   });
 
   it('treats a transient dependency-resolution failure as an error, not a drop, and holds `since`', async () => {
-    const root = catalogRoot();
+    const root = mcpRoot();
     const routes = mcpRoutes([{ name: 'io.github.acme/gh', stars: 300 }], tarball());
     const lock = () => { throw new Error('Command failed: npm install\nnpm error code ECONNRESET'); };
     const s = await crawl('mcp', { ...env(root, routes, []), lock });
     expect(s.errors.map((n) => n.id)).toEqual(['io-github-acme-gh']);
     expect(s.dropped).toEqual([]);
     const state = JSON.parse(readFileSync(join(root, 'state', 'mcp.json'), 'utf8'));
-    expect(state.since).toBeNull();
+    expect(state.since).toBe(SINCE);
     expect(state.seen).toEqual({});
   });
 
   it('drops a package whose tarball fails its integrity check instead of blocking `since` forever', async () => {
-    const root = catalogRoot();
+    const root = mcpRoot();
     const routes = mcpRoutes([{ name: 'io.github.acme/gh', stars: 300 }], tarball());
     routes['https://registry.npmjs.org/@acme/gh/1.0.0'] = { dist: { integrity: I, tarball: 'https://r.example/p.tgz' } };
     const s = await crawl('mcp', env(root, routes, []));
@@ -142,23 +152,24 @@ describe('crawl mcp', () => {
   });
 
   it('withdraws an active server the registry now lists as deleted, even at the same version', async () => {
-    const root = catalogRoot();
+    const root = mcpRoot();
     const routes = mcpRoutes([{ name: 'io.github.acme/gh', stars: 300 }], tarball());
     await crawl('mcp', env(root, routes, []));
-    const page = routes[`${R}?limit=100&version=latest`] as { servers: { _meta: Record<string, { status: string }> }[] };
+    const page = routes[PAGE] as { servers: { _meta: Record<string, { status: string }> }[] };
     page.servers[0]._meta['io.modelcontextprotocol.registry/official'].status = 'deleted';
     routes[`${R}?limit=100&version=latest&updated_since=2026-10-16T03%3A17%3A00.000Z`] = page;
     const s = await crawl('mcp', { ...env(root, routes, []), now: new Date('2026-10-17T03:17:00Z') });
     expect(s.withdrawn).toEqual(['io-github-acme-gh']);
     expect(s.updated).toEqual([]);
+    expect(summaryMarkdown(s, '2026-10-17')).toContain('- 내림(withdrawn) 1: `io-github-acme-gh`');
     expect(JSON.parse(readFileSync(join(root, 'items', 'mcp', 'io-github-acme-gh.json'), 'utf8')).status).toBe('withdrawn');
   });
 
   it('reviews a server only once even if the registry lists it twice in one run', async () => {
-    const root = catalogRoot();
+    const root = mcpRoot();
     const calls: string[] = [];
     const routes = mcpRoutes([{ name: 'io.github.acme/gh', stars: 300 }], tarball());
-    const page = routes[`${R}?limit=100&version=latest`] as { servers: unknown[] };
+    const page = routes[PAGE] as { servers: unknown[] };
     page.servers.push(page.servers[0]);
     const s = await crawl('mcp', env(root, routes, calls));
     expect(s.added).toEqual(['io-github-acme-gh']);
@@ -168,8 +179,8 @@ describe('crawl mcp', () => {
   it('seed: looks only at the named servers and starts `since` now, so the first run does not walk the whole registry', async () => {
     const root = catalogRoot();
     const routes = mcpRoutes([{ name: 'io.github.acme/gh', stars: 300 }], tarball());
-    const entry = (routes[`${R}?limit=100&version=latest`] as { servers: unknown[] }).servers[0];
-    delete routes[`${R}?limit=100&version=latest`];
+    const entry = (routes[PAGE] as { servers: unknown[] }).servers[0];
+    delete routes[PAGE];
     routes[`${R}/io.github.acme%2Fgh/versions/latest`] = entry;
     const s = await crawl('mcp', env(root, routes, []), ['io.github.acme/gh', 'io.github.nobody/none']);
     expect(s.added).toEqual(['io-github-acme-gh']);
@@ -177,15 +188,57 @@ describe('crawl mcp', () => {
     expect(JSON.parse(readFileSync(join(root, 'state', 'mcp.json'), 'utf8')).since).toBe(NOW.toISOString());
   });
 
-  it('stops reviewing new servers at the per-run cap and keeps `since` so the rest come next run', async () => {
+  it('does nothing before the seed: without `since` it writes no item or state and says to seed first', async () => {
     const root = catalogRoot();
+    const { http, calls } = fakeHttp({});
+    const s = await crawl('mcp', { ...env(root, {}, []), http });
+    expect(calls).toEqual([]);
+    expect(readdirSync(root)).toEqual(['vocab.json']);
+    expect(summaryMarkdown(s, '2026-10-16')).toContain('seed mcp <이름…>');
+  });
+
+  it('does not let another registry name with the same id withdraw or overwrite an item', async () => {
+    const root = mcpRoot();
+    const routes = mcpRoutes([{ name: 'io.github.acme/mcp-server', stars: 300 }], tarball());
+    await crawl('mcp', env(root, routes, []));
+    const page = structuredClone(routes[PAGE]) as { servers: { server: { name: string }; _meta: Record<string, { status: string }> }[] };
+    page.servers[0].server.name = 'io.github.acme-mcp/server';
+    page.servers[0]._meta['io.modelcontextprotocol.registry/official'].status = 'deprecated';
+    routes[`${R}?limit=100&version=latest&updated_since=2026-10-16T03%3A17%3A00.000Z`] = page;
+    const s = await crawl('mcp', { ...env(root, routes, []), now: new Date('2026-10-17T03:17:00Z') });
+    expect(s.withdrawn).toEqual([]);
+    expect(s.dropped).toEqual([{ id: 'io-github-acme-mcp-server', version: '1.0.0', reasons: ['id collision with io.github.acme/mcp-server'] }]);
+    expect(JSON.parse(readFileSync(join(root, 'items', 'mcp', 'io-github-acme-mcp-server.json'), 'utf8')).status).toBe('active');
+    expect(JSON.parse(readFileSync(join(root, 'state', 'mcp.json'), 'utf8')).seen).toEqual({});
+  });
+
+  it('keeps the review when Scorecard fails after the Claude calls (Scorecard is optional)', async () => {
+    const root = mcpRoot();
+    const routes = mcpRoutes([{ name: 'io.github.acme/gh', stars: 300 }], tarball());
+    const base = fakeHttp(routes).http;
+    const http: typeof base = async (u, i) => (String(u).startsWith('https://api.scorecard.dev/') ? new Response('down', { status: 503 }) : base(u, i));
+    const s = await crawl('mcp', { ...env(root, routes, []), http });
+    expect([s.added, s.errors]).toEqual([['io-github-acme-gh'], []]);
+    expect(JSON.parse(readFileSync(join(root, 'items', 'mcp', 'io-github-acme-gh.json'), 'utf8')).scorecard).toBeNull();
+  });
+
+  it('lists the new chips the tagger proposed, once each, as code spans', async () => {
+    const root = mcpRoot();
+    const routes = mcpRoutes([{ name: 'io.github.acme/a', stars: 300 }, { name: 'io.github.acme/b', stars: 300 }], tarball());
+    const s = await crawl('mcp', { ...env(root, routes, []), ask: fakeAsk([], ['ci', 'release\n`x`']) });
+    expect(s.added).toHaveLength(2);
+    expect(summaryMarkdown(s, '2026-10-16')).toContain("### 새 칩 제안 2\n- `ci`\n- `release 'x'`\n");
+  });
+
+  it('stops reviewing new servers at the per-run cap and keeps `since` so the rest come next run', async () => {
+    const root = mcpRoot();
     const calls: string[] = [];
     const n = MAX_NEW_PER_RUN.mcp + 2;
     const routes = mcpRoutes(Array.from({ length: n }, (_, i) => ({ name: `io.github.acme/s${i}`, stars: 300 })), tarball());
     const s = await crawl('mcp', env(root, routes, calls));
     expect(s.added).toHaveLength(MAX_NEW_PER_RUN.mcp);
     expect(s.capped).toBe(true);
-    expect(JSON.parse(readFileSync(join(root, 'state', 'mcp.json'), 'utf8')).since).toBeNull();
+    expect(JSON.parse(readFileSync(join(root, 'state', 'mcp.json'), 'utf8')).since).toBe(SINCE);
     expect(summaryMarkdown(s, '2026-10-16')).toContain('다음 실행에서 본다');
   });
 });
@@ -193,7 +246,7 @@ describe('crawl mcp', () => {
 describe('summaryMarkdown', () => {
   it('renders untrusted notes as one line inside code spans', () => {
     const s = {
-      kind: 'mcp' as const, added: [], updated: [], withdrawn: [], held: [], rejected: [], dropped: [], capped: false,
+      kind: 'mcp' as const, added: [], updated: [], withdrawn: [], held: [], rejected: [], dropped: [], newChips: [], capped: false,
       errors: [{ id: 'x', version: '1.0.0\n## fake', reasons: ['line one\n\n@someone see #12 `rm -rf`', 'y'.repeat(400)] }],
     };
     const line = summaryMarkdown(s, '2026-10-16').split('\n').find((l) => l.startsWith('- `x`'))!;
@@ -273,6 +326,16 @@ describe('crawl skill', () => {
     expect(s.added).toEqual(['anthropics-claude-plugins-official-extra']);
     expect(s.withdrawn).toEqual([]);
     expect(JSON.parse(readFileSync(join(root, 'items', 'skill', 'anthropics-skills-good.json'), 'utf8')).status).toBe('active');
+  });
+
+  // 바뀐 것이 없는 날에 시각만 바뀐 PR이 매일 자동 병합되지 않게, skill 상태 파일은 그대로 둔다.
+  it('leaves the skill state file byte-identical on a run with no item changes', async () => {
+    const root = catalogRoot();
+    const run = (now: Date) => crawl('skill', { http: fakeHttp(skillRoutes()).http, ask: skillAsk([]), now, root, lock: () => [] });
+    await run(NOW);
+    const before = readFileSync(join(root, 'state', 'skill.json'));
+    await run(new Date('2026-10-17T03:17:00Z'));
+    expect(readFileSync(join(root, 'state', 'skill.json'))).toEqual(before);
   });
 
   it('withdraws a skill that disappeared from its repository', async () => {
