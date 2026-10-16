@@ -69,7 +69,7 @@ export async function reviewItem(ask: Ask, kind: Kind, files: ReviewFile[]): Pro
   if (!r.ok) return cannot(r.why);
   if (!isReview(r.json)) return cannot('malformed review answer');
   const out = r.json;
-  const lines = new Map(files.map((f) => [f.path, f.text.split('\n').length]));
+  const lines = new Map(files.filter((f) => f.path !== '(binary files)').map((f) => [f.path, f.text.split('\n').length]));
   const real = (f: Finding) => f.line >= 1 && f.line <= (lines.get(f.file) ?? 0);
   const downgrade = (why: string): Review => ({ ...out, verdict: 'warn', summary: `${out.summary} (warn: ${why})` });
   if (kind === 'mcp') out.rw = out.tools.length > 0 && out.tools.every((t) => t.rw === 'R') ? 'R' : 'W';

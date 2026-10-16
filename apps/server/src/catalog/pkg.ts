@@ -115,9 +115,12 @@ export function extractTarball(buf: Buffer, dest: string): void {
   }
 }
 
+const CODE_EXTS = ['', '.js', '.mjs', '.cjs', '.ts', '.mts', '.cts', '.jsx', '.tsx', '.json'];
+
 // 검토자에게 넘길 글. 심볼릭 링크는 따라가지 않는다(패키지 밖 파일을 읽어 보내지 않게). 동작이 없는 .d.ts·.map은 뺀다.
 // 확장자로 거르지 않는다: require('./data.txt')나 확장자 없는 파일, 묶인 node_modules에도 코드가 숨을 수 있다.
-// NUL 바이트가 든 파일은 바이너리라 내용 대신 경로만 마지막 한 항목('(binary files)')으로 넘긴다.
+// NUL 바이트가 든 다른 파일은 바이너리라 내용 대신 경로만 마지막 한 항목('(binary files)')으로 넘긴다.
+// 코드 파일(확장자 없는 것 포함)은 NUL이 있어도 Node가 실행하므로 글로 보여 주고, NUL은 눈에 보이는 \0으로 바꾼다.
 export function reviewFiles(dir: string, exts?: string[]): { path: string; text: string }[] {
   const out: { path: string; text: string }[] = [];
   const binary: string[] = [];
@@ -129,8 +132,10 @@ export function reviewFiles(dir: string, exts?: string[]): { path: string; text:
       if (st.isDirectory()) walk(p);
       else if (st.isFile() && !name.endsWith('.d.ts') && (exts ? exts.includes(extname(name)) : !name.endsWith('.map'))) {
         const buf = readFileSync(p);
-        if (!exts && buf.includes(0)) binary.push(relative(dir, p));
-        else out.push({ path: relative(dir, p), text: buf.toString('utf8') });
+        const text = buf.toString('utf8');
+        if (exts || CODE_EXTS.includes(extname(name))) out.push({ path: relative(dir, p), text: exts ? text : text.replaceAll('\0', '\\0') });
+        else if (buf.includes(0)) binary.push(relative(dir, p));
+        else out.push({ path: relative(dir, p), text });
       }
     }
   };

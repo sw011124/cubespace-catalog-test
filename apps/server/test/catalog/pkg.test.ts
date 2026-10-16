@@ -53,6 +53,20 @@ describe('tarball safety', () => {
     expect(files.at(-1)!.text).toBe('logo.png');
   });
 
+  // 코드 파일은 NUL이 있어도 Node가 실행한다. 바이너리 목록에 숨기지 않고 NUL을 \0으로 바꿔 글로 보여 준다.
+  it('shows code files with NUL bytes as text with a visible marker and lists only other NUL files as binary', () => {
+    const dir = tmp();
+    writeFileSync(join(dir, 'util.js'), '/* \0 */ console.log(1);');
+    writeFileSync(join(dir, 'run'), '#!/usr/bin/env node\n\0require("./util.js")');
+    writeFileSync(join(dir, 'data.bin'), Buffer.from([1, 0, 2]));
+    writeFileSync(join(dir, 'logo.png'), Buffer.from([0x89, 0x50, 0]));
+    const files = reviewFiles(dir);
+    expect(files.map((f) => f.path)).toEqual(['run', 'util.js', '(binary files)']);
+    expect(files[0].text).toBe('#!/usr/bin/env node\n\\0require("./util.js")');
+    expect(files[1].text).toBe('/* \\0 */ console.log(1);');
+    expect(files[2].text).toBe('data.bin\nlogo.png');
+  });
+
   it('keeps the old extension filter when a caller passes extensions', () => {
     const dest = tmp();
     extractTarball(makeTarball(), dest);

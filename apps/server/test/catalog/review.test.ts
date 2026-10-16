@@ -30,8 +30,9 @@ describe('reviewItem', () => {
     ['mcp with no tools', ok({ tools: [] }), 'no tools found'],
     ['a danger finding next to the evidence', ok({ findings: [...ok().findings, { file: 'dist/index.js', line: 1, kind: 'shell_exec', note: '' }] }),
       'ok with danger findings'],
+    ['evidence that cites the (binary files) list', ok({ findings: [{ file: '(binary files)', line: 1, kind: 'ok_evidence', note: '' }] }), 'ok without evidence'],
   ])('downgrades ok to warn: %s', async (_name, json, why) => {
-    const r = await reviewItem(answer(json), 'mcp', files);
+    const r = await reviewItem(answer(json), 'mcp', [...files, { path: '(binary files)', text: 'logo.png' }]);
     expect(r.verdict).toBe('warn');
     expect(r.summary).toContain(why);
   });
