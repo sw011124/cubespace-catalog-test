@@ -28,10 +28,17 @@ describe('reviewItem', () => {
     ['evidence on a line that does not exist', ok({ findings: [{ file: 'dist/index.js', line: 99, kind: 'ok_evidence', note: '' }] }), 'ok without evidence'],
     ['evidence in a file that was not sent', ok({ findings: [{ file: 'other.js', line: 1, kind: 'ok_evidence', note: '' }] }), 'ok without evidence'],
     ['mcp with no tools', ok({ tools: [] }), 'no tools found'],
+    ['a danger finding next to the evidence', ok({ findings: [...ok().findings, { file: 'dist/index.js', line: 1, kind: 'shell_exec', note: '' }] }),
+      'ok with danger findings'],
   ])('downgrades ok to warn: %s', async (_name, json, why) => {
     const r = await reviewItem(answer(json), 'mcp', files);
     expect(r.verdict).toBe('warn');
     expect(r.summary).toContain(why);
+  });
+
+  it('downgrades a skill too when ok comes with a danger finding', async () => {
+    const json = ok({ findings: [...ok().findings, { file: 'dist/index.js', line: 1, kind: 'exfiltration', note: '' }] });
+    expect((await reviewItem(answer(json), 'skill', files)).verdict).toBe('warn');
   });
 
   it('gives an mcp with no tools rw W, not R', async () => {
