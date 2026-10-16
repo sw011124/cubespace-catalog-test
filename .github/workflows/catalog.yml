@@ -1,0 +1,132 @@
+# AI 확장 목록 매일 갱신(docs/specs/ai-preset-builder.md 4절).
+# crawl: 읽기 권한만으로 받아 검사·검토한다. API 키는 이 작업에만 있다.
+# propose: GitHub App 토큰으로 종류별 PR을 연다. 기본 GITHUB_TOKEN으로 연 PR은 CI가 승인 대기로 떠서 쓰지 않는다.
+name: catalog
+
+on:
+  schedule:
+    - cron: '17 18 * * *' # 매일 03:17 KST. 정시는 붐벼서 늦거나 빠진다
+  workflow_dispatch: {}
+
+permissions: {}
+
+concurrency:
+  group: catalog
+  cancel-in-progress: false
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        kind: [skill, mcp]
+    steps:
+      - uses: actions/checkout@v7
+      # 아직 병합 안 된 PR이 있으면 그 내용에서 이어 간다(같은 항목을 다시 검토하지 않게). 자기 종류 파일만 가져온다.
+      - name: Continue from the open catalog PR
+        run: |
+          if git fetch --quiet origin "catalog/${{ matrix.kind }}"; then
+            git checkout FETCH_HEAD -- "apps/server/catalog/items/${{ matrix.kind }}" 2>/dev/null || true
+            git checkout FETCH_HEAD -- "apps/server/catalog/state/${{ matrix.kind }}.json" 2>/dev/null || true
+          fi
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # pnpm run은 머리줄을 표준 출력에 붙이므로 node로 바로 부른다(표준 출력이 PR 본문이다).
+      - name: Crawl
+        working-directory: apps/server
+        run: node src/catalog/cli.ts crawl "${{ matrix.kind }}" > "$GITHUB_WORKSPACE/summary.md"
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: catalog-${{ matrix.kind }}
+          path: |
+            apps/server/catalog/items/${{ matrix.kind }}
+            apps/server/catalog/state/${{ matrix.kind }}.json
+            summary.md
+          if-no-files-found: error
+
+  propose:
+    needs: crawl
+    runs-on: ubuntu-latest
+    permissions: {}
+    strategy:
+      fail-fast: false
+      matrix:
+        kind: [skill, mcp]
+    steps:
+      - uses: actions/create-github-app-token@v3
+        id: app
+        with:
+          client-id: ${{ vars.CATALOG_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CATALOG_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+      - uses: actions/checkout@v7
+        with:
+          token: ${{ steps.app.outputs.token }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: catalog-${{ matrix.kind }}
+          path: ${{ runner.temp }}/out
+      - name: Open or update the PR
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          KIND: ${{ matrix.kind }}
+          OUT: ${{ runner.temp }}/out
+        run: |
+          set -euo pipefail
+          dest=apps/server/catalog
+          rm -rf "$dest/items/$KIND"
+          mkdir -p "$dest/items/$KIND" "$dest/state"
+          if [ -d "$OUT/apps/server/catalog/items/$KIND" ]; then cp -R "$OUT/apps/server/catalog/items/$KIND/." "$dest/items/$KIND/"; fi
+          cp "$OUT/apps/server/catalog/state/$KIND.json" "$dest/state/$KIND.json"
+          git add "$dest/items/$KIND" "$dest/state/$KIND.json"
+          if git diff --cached --quiet; then echo "no change"; exit 0; fi
+          branch="catalog/$KIND"
+          git switch -C "$branch"
+          git -c user.name="cubespace-catalog[bot]" -c user.email="cubespace-catalog@users.noreply.github.com" \
+            commit -q -m "catalog($KIND): 매일 갱신"
+          git push --force origin "$branch"
+          title="catalog($KIND): 매일 갱신"
+          if gh pr view "$branch" --json state --jq .state 2>/dev/null | grep -q OPEN; then
+            gh pr edit "$branch" --body-file "$OUT/summary.md"
+          else
+            gh pr create --base main --head "$branch" --title "$title" --body-file "$OUT/summary.md"
+          fi
+          # skill은 검토 ok + CI 통과면 자동 병합(설계 4.5절). mcp는 CODEOWNERS 검토를 기다린다.
+          if [ "$KIND" = skill ]; then gh pr merge "$branch" --auto --squash; fi
+
+  watch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Watch prompt reference pages
+        working-directory: apps/server
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          changed=$(node src/catalog/cli.ts watch)
+          [ -z "$changed" ] && exit 0
+          title="공식 안내 변경, 틀 재검토"
+          if gh issue list --state open --search "\"$title\" in:title" --json number --jq 'length' | grep -qv '^0$'; then exit 0; fi
+          printf '프롬프트 틀의 참고 출처가 바뀌었다(설계 6절).\n\n%s\n\n틀을 다시 본 뒤 `node apps/server/src/catalog/cli.ts watch --update`로 기준을 올리고 PR로 병합한다.\n' "$changed" \
+            | gh issue create --title "$title" --body-file -
