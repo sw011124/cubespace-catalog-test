@@ -97,5 +97,9 @@ export async function tagItem(ask: Ask, vocab: Vocab, kind: Kind, files: ReviewF
   if (!r.ok) throw new Error(`tagging failed: ${r.why}`);
   const t = r.json as Tags & { new_chips: string[] };
   const keep = (vals: string[], allowed: string[]) => [...new Set(vals.filter((v) => allowed.includes(v)))];
-  return { ...t, task: keep(t.task, vocab.task), stage: keep(t.stage, vocab.stage), capability: keep(t.capability, vocab.capability) };
+  // 새 칩 제안은 어휘와 같은 꼴(영어 소문자, 밑줄)로 맞추고, 이미 어휘에 있는 것은 뺀다.
+  const known = new Set(Object.values(vocab).flat());
+  const chip = (c: string) => c.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  const newChips = [...new Set(t.new_chips.map(chip))].filter((c) => c && !known.has(c));
+  return { ...t, task: keep(t.task, vocab.task), stage: keep(t.stage, vocab.stage), capability: keep(t.capability, vocab.capability), new_chips: newChips };
 }

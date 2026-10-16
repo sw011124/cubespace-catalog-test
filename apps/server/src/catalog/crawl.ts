@@ -236,7 +236,9 @@ async function skillOne(b: Base, repo: string, rf: RepoFacts, d: SkillDir, id: s
     sha256: sha256(files.map((f) => `${f.path}\0${f.text}`).join('\0')),
     source: `https://github.com/${repo}/tree/${d.commit}/${d.dir}`, updated_at: at, commit: d.commit, package: null,
     stars: rf.stars, forks: rf.forks, license: lic!, scorecard: null, verified_at: at,
-    tags: { task: tags.task, stage: tags.stage, capability: tags.capability, needs_shell: tags.needs_shell, windows: tags.windows },
+    // W skill은 읽기 전용 단계(plan·review)에 둘 수 없다(설계 8절 충돌 검사). MCP는 도구마다 R/W라 그대로 둔다.
+    tags: { task: tags.task, stage: review.rw === 'W' ? tags.stage.filter((st) => st !== 'plan' && st !== 'review') : tags.stage,
+      capability: tags.capability, needs_shell: tags.needs_shell, windows: tags.windows },
     rw: review.rw, tools: [], review: { verdict: review.verdict, summary: review.summary }, approval: 'auto', status: 'active',
   }, !cur);
 }

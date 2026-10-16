@@ -230,7 +230,7 @@ describe('crawl mcp', () => {
     const routes = mcpRoutes([{ name: 'io.github.acme/a', stars: 300 }, { name: 'io.github.acme/b', stars: 300 }], tarball());
     const s = await crawl('mcp', { ...env(root, routes, []), ask: fakeAsk([], ['ci', 'release\n`x`']) });
     expect(s.added).toHaveLength(2);
-    expect(summaryMarkdown(s, '2026-10-16')).toContain("### 새 칩 제안 2\n- `ci`\n- `release 'x'`\n");
+    expect(summaryMarkdown(s, '2026-10-16')).toContain('### 새 칩 제안 2\n- `ci`\n- `release_x`\n');
   });
 
   it('stops reviewing new servers at the per-run cap and keeps `since` so the rest come next run', async () => {
@@ -309,6 +309,16 @@ describe('crawl skill', () => {
     const item = JSON.parse(readFileSync(join(root, 'items', 'skill', 'anthropics-skills-good.json'), 'utf8'));
     expect(checkItem(item, loadVocab(join(root, 'vocab.json')))).toEqual([]);
     expect(item).toMatchObject({ approval: 'auto', license: 'Apache-2.0', version: 't:skills/good', commit: C });
+  });
+
+  it('keeps a W skill out of the read-only stages (plan, review)', async () => {
+    const root = catalogRoot();
+    const ask: Ask = async (system) => system.includes('보안 검토자')
+      ? { ok: true, json: { verdict: 'ok', rw: 'W', tools: [], findings: [{ file: 'SKILL.md', line: 4, kind: 'ok_evidence', note: '' }], summary: '파일을 쓴다' } }
+      : { ok: true, json: { task: ['feature'], stage: ['plan', 'implement', 'review', 'fix'], capability: [], needs_shell: false, windows: 'yes', new_chips: [] } };
+    await crawl('skill', { http: fakeHttp(skillRoutes()).http, ask, now: NOW, root, lock: () => [] });
+    const item = JSON.parse(readFileSync(join(root, 'items', 'skill', 'anthropics-skills-good.json'), 'utf8'));
+    expect(item.tags.stage).toEqual(['implement']); // 시험 어휘의 stage는 plan·implement뿐
   });
 
   it('keeps going when one skill source is broken and does not withdraw that source\'s items', async () => {

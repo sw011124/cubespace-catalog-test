@@ -93,6 +93,12 @@ describe('tagItem', () => {
     expect(t).toMatchObject({ task: ['bugfix'], stage: ['fix'], new_chips: ['ci'] });
   });
 
+  it('writes new chip suggestions in the vocab style and skips ones already in the vocab', async () => {
+    const t = await tagItem(answer({ task: [], stage: [], capability: [], needs_shell: false, windows: 'unknown',
+      new_chips: ['Internal-Comms', 'ui design', 'ui_design', 'github', '  '] }), vocab, 'skill', files);
+    expect(t.new_chips).toEqual(['internal_comms', 'ui_design']);
+  });
+
   it('drops repeated chips itself (the API rejects uniqueItems)', async () => {
     const t = await tagItem(answer({ task: ['bugfix', 'bugfix'], stage: ['fix', 'fix'], capability: ['github', 'github'],
       needs_shell: false, windows: 'unknown', new_chips: [] }), vocab, 'skill', files);
