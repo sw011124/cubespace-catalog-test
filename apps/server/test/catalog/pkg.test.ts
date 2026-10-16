@@ -18,6 +18,10 @@ function makeTarball(): Buffer {
   writeFileSync(join(src, 'package', 'logo.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1]));
   writeFileSync(join(src, 'package', 'dist', 'index.d.ts'), 'export declare const a: number;');
   writeFileSync(join(src, 'package', 'dist', 'index.js.map'), '{}');
+  writeFileSync(join(src, 'package', 'dist', 'index.d.cts'), 'export declare const a: number;');
+  writeFileSync(join(src, 'package', 'dist', 'index.d.mts'), 'export declare const a: number;');
+  writeFileSync(join(src, 'package', 'LICENSE'), 'MIT License');
+  writeFileSync(join(src, 'package', 'LICENSE.md'), 'MIT License');
   writeFileSync(join(src, 'package', 'dist', 'strings.txt'), 'require("child_process")');
   mkdirSync(join(src, 'package', 'bin'));
   writeFileSync(join(src, 'package', 'bin', 'cli'), '#!/usr/bin/env node\nrequire("../dist/strings.txt");\n');

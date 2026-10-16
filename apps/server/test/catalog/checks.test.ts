@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { gate, type Facts } from '../../src/catalog/checks.ts';
+import { MAX_REVIEW_CHARS } from '../../src/catalog/limits.ts';
 
 const now = new Date('2026-10-15T00:00:00Z');
 const good: Facts = {
@@ -34,7 +35,7 @@ describe('gate', () => {
 
   it('hands big packages to a human instead of Claude', () => {
     expect(gate({ ...good, depCount: 151 }, now)).toEqual({ kind: 'human', reasons: ['dependencies 151 > 150'] });
-    expect(gate({ ...good, reviewChars: 200_001 }, now).kind).toBe('human');
+    expect(gate({ ...good, reviewChars: MAX_REVIEW_CHARS + 1 }, now).kind).toBe('human');
   });
 
   it('drop wins over human', () => {

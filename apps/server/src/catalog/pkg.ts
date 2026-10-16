@@ -116,6 +116,8 @@ export function extractTarball(buf: Buffer, dest: string): void {
 }
 
 const CODE_EXTS = ['', '.js', '.mjs', '.cjs', '.ts', '.mts', '.cts', '.jsx', '.tsx', '.json'];
+// 타입 선언과 라이선스 글은 동작이 없는데 검토 글을 크게 늘린다(실제 MCP에서 상한을 넘긴 주원인). 라이선스는 따로 판정한다.
+const NOT_REVIEWED = /\.d\.[cm]?ts$|^(LICEN[CS]E|COPYING)(\..*)?$/i;
 
 // 검토자에게 넘길 글. 심볼릭 링크는 따라가지 않는다(패키지 밖 파일을 읽어 보내지 않게). 동작이 없는 .d.ts·.map은 뺀다.
 // 확장자로 거르지 않는다: require('./data.txt')나 확장자 없는 파일, 묶인 node_modules에도 코드가 숨을 수 있다.
@@ -130,7 +132,7 @@ export function reviewFiles(dir: string, exts?: string[]): { path: string; text:
       const st = lstatSync(p);
       if (st.isSymbolicLink()) continue;
       if (st.isDirectory()) walk(p);
-      else if (st.isFile() && !name.endsWith('.d.ts') && (exts ? exts.includes(extname(name)) : !name.endsWith('.map'))) {
+      else if (st.isFile() && !NOT_REVIEWED.test(name) && (exts ? exts.includes(extname(name)) : !name.endsWith('.map'))) {
         const buf = readFileSync(p);
         const text = buf.toString('utf8');
         if (exts || CODE_EXTS.includes(extname(name).toLowerCase())) out.push({ path: relative(dir, p), text: exts ? text : text.replaceAll('\0', '\\0') });
