@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { linkSync, mkdirSync, mkdtempSync, readdirSync, symlinkSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { gzipSync } from 'node:zlib';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { extractTarball, fetchTarball, lockDeps, reviewFiles, sri512, unsafeNames } from '../../src/catalog/pkg.ts';
@@ -15,7 +16,7 @@ function makeTarball(): Buffer {
   writeFileSync(join(src, 'package', 'dist', 'index.js'), 'export const a = 1;\n');
   writeFileSync(join(src, 'package', 'logo.png'), 'binary');
   writeFileSync(join(src, 'package', 'dist', 'index.d.ts'), 'export declare const a: number;');
-  execFileSync('tar', ['-czf', join(src, 'p.tgz'), '-C', src, 'package']);
+  execFileSync('tar', ['-czf', join(src, 'p.tgz'), '-C', src, 'package'], { env: { ...process.env, COPYFILE_DISABLE: '1' } });
   return readFileSync(join(src, 'p.tgz'));
 }
 
@@ -67,6 +68,30 @@ describe('link entries', () => {
     const dest = tmp();
     expect(() => extractTarball(buf, dest)).toThrow('unsupported tar entry');
     expect(readdirSync(dest)).toEqual([]);
+  });
+});
+
+// 헤더를 직접 만든 tar: tar가 보는 크기와 이 파서가 보는 크기가 다른 경우를 재현한다(체크섬은 확인하지 않는다).
+function ustar(name: string, type: string, size: number, linkname = ''): Buffer {
+  const h = Buffer.alloc(512);
+  h.write(name, 0, 'utf8');
+  h.write(size.toString(8).padStart(11, '0') + '\0', 124, 'ascii');
+  h.write(type, 156, 'ascii');
+  h.write(linkname, 157, 'utf8');
+  return h;
+}
+
+describe('header walk', () => {
+  it('never creates a symlink, even when a directory header hides one in its size', () => {
+    const outside = tmp();
+    const tarBuf = Buffer.concat([ustar('package/d', '5', 512), ustar('package/evil', '2', 0, outside), Buffer.alloc(1024)]);
+    const dest = tmp();
+    try {
+      extractTarball(gzipSync(tarBuf), dest);
+    } catch {
+      // 던져도 된다. 검사하는 것은 링크가 생기지 않았다는 점이다.
+    }
+    expect(readdirSync(dest, { recursive: true, withFileTypes: true }).filter((e) => e.isSymbolicLink())).toEqual([]);
   });
 });
 
