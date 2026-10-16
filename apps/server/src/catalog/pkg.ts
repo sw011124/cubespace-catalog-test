@@ -133,7 +133,7 @@ export function reviewFiles(dir: string, exts?: string[]): { path: string; text:
       else if (st.isFile() && !name.endsWith('.d.ts') && (exts ? exts.includes(extname(name)) : !name.endsWith('.map'))) {
         const buf = readFileSync(p);
         const text = buf.toString('utf8');
-        if (exts || CODE_EXTS.includes(extname(name))) out.push({ path: relative(dir, p), text: exts ? text : text.replaceAll('\0', '\\0') });
+        if (exts || CODE_EXTS.includes(extname(name).toLowerCase())) out.push({ path: relative(dir, p), text: exts ? text : text.replaceAll('\0', '\\0') });
         else if (buf.includes(0)) binary.push(relative(dir, p));
         else out.push({ path: relative(dir, p), text });
       }

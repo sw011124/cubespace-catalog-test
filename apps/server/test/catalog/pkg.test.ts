@@ -58,13 +58,15 @@ describe('tarball safety', () => {
     const dir = tmp();
     writeFileSync(join(dir, 'util.js'), '/* \0 */ console.log(1);');
     writeFileSync(join(dir, 'run'), '#!/usr/bin/env node\n\0require("./util.js")');
+    writeFileSync(join(dir, 'Lib.JS'), 'x\0y');
     writeFileSync(join(dir, 'data.bin'), Buffer.from([1, 0, 2]));
     writeFileSync(join(dir, 'logo.png'), Buffer.from([0x89, 0x50, 0]));
     const files = reviewFiles(dir);
-    expect(files.map((f) => f.path)).toEqual(['run', 'util.js', '(binary files)']);
-    expect(files[0].text).toBe('#!/usr/bin/env node\n\\0require("./util.js")');
-    expect(files[1].text).toBe('/* \\0 */ console.log(1);');
-    expect(files[2].text).toBe('data.bin\nlogo.png');
+    expect(files.map((f) => f.path)).toEqual(['Lib.JS', 'run', 'util.js', '(binary files)']);
+    expect(files[0].text).toBe('x\\0y');
+    expect(files[1].text).toBe('#!/usr/bin/env node\n\\0require("./util.js")');
+    expect(files[2].text).toBe('/* \\0 */ console.log(1);');
+    expect(files[3].text).toBe('data.bin\nlogo.png');
   });
 
   it('keeps the old extension filter when a caller passes extensions', () => {
