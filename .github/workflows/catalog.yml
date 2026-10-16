@@ -19,6 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      pull-requests: read
     strategy:
       fail-fast: false
       matrix:
@@ -27,8 +28,10 @@ jobs:
       - uses: actions/checkout@v7
       # 아직 병합 안 된 PR이 있으면 그 내용에서 이어 간다(같은 항목을 다시 검토하지 않게). 자기 종류 파일만 가져온다.
       - name: Continue from the open catalog PR
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if git fetch --quiet origin "catalog/${{ matrix.kind }}"; then
+          if gh pr view "catalog/${{ matrix.kind }}" --json state --jq .state 2>/dev/null | grep -q '^OPEN$' && git fetch --quiet origin "catalog/${{ matrix.kind }}"; then
             git checkout FETCH_HEAD -- "apps/server/catalog/items/${{ matrix.kind }}" 2>/dev/null || true
             git checkout FETCH_HEAD -- "apps/server/catalog/state/${{ matrix.kind }}.json" 2>/dev/null || true
           fi
