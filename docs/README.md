@@ -43,6 +43,7 @@
 - 이 문서들만 읽으면 시스템 전체를 알 수 있게 썼다. 요구사항 원문은 [00-공통/04-요구사항](00-공통/04-요구사항.md), 권장안·미정은 [03-미정-결정](00-공통/03-미정-결정.md), 용어는 [02-용어](00-공통/02-용어.md)에 있다.
 - 이 저장소 <https://github.com/CubeSpace-Inha/CubeSpace> 하나에 문서와 모든 코드를 둔다: 공용 메시지 형식·시험 벡터 `packages/protocol/`, 앱 `apps/`(client·core·pad-gateway·pad-sim·server), 창 어댑터 `drivers/win-driver/`, 펌웨어 `firmware/`, 하드웨어 생성 스크립트·STL·DXF `hardware/`, 광학·측정 도구 `optics/`·`measure/`([아키텍처 8](00-공통/01-아키텍처.md)). 지금은 문서만 올렸다. 값과 규칙은 이 문서가 기준이고, 제작 파일은 이 문서의 값으로 다시 만들 수 있다.
 - 첫 구현 계획: [plans/proto-v1](plans/proto-v1.md)(`packages/protocol`과 `firmware/`의 공용 규격 코덱과 시험 벡터).
+- AI 확장 목록과 프리셋 만들기: 설계 [specs/ai-preset-builder](specs/ai-preset-builder.md), 구현 계획 [plans/ai-preset-builder](plans/ai-preset-builder.md)(1단계 목록 만들기).
 
 ## 상태 표시
 
