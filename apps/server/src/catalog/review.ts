@@ -76,7 +76,8 @@ export async function reviewItem(ask: Ask, kind: Kind, files: ReviewFile[]): Pro
   if (out.verdict !== 'ok') return out;
   if (!out.findings.some((f) => f.kind === 'ok_evidence' && real(f))) return downgrade('ok without evidence lines that exist');
   // 위험 발견을 적고도 ok라고 하면 판정과 근거가 어긋난다. skill이 자동 병합되지 않게 warn으로 둔다.
-  if (out.findings.some((f) => f.kind !== 'ok_evidence')) return downgrade('ok with danger findings');
+  // file_write는 위험이 아니라 W 등급의 근거라서 뺀다(설계 4.3절).
+  if (out.findings.some((f) => f.kind !== 'ok_evidence' && f.kind !== 'file_write')) return downgrade('ok with danger findings');
   if (kind === 'mcp' && out.tools.length === 0) return downgrade('no tools found');
   return out;
 }

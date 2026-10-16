@@ -37,6 +37,11 @@ describe('reviewItem', () => {
     expect(r.summary).toContain(why);
   });
 
+  it('keeps ok when the only other finding is file_write (R/W evidence, not a danger)', async () => {
+    const json = ok({ rw: 'W', findings: [...ok().findings, { file: 'dist/index.js', line: 1, kind: 'file_write', note: 'writes a report' }] });
+    expect((await reviewItem(answer(json), 'skill', files)).verdict).toBe('ok');
+  });
+
   it('downgrades a skill too when ok comes with a danger finding', async () => {
     const json = ok({ findings: [...ok().findings, { file: 'dist/index.js', line: 1, kind: 'exfiltration', note: '' }] });
     expect((await reviewItem(answer(json), 'skill', files)).verdict).toBe('warn');
