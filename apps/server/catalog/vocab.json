@@ -1,0 +1,6 @@
+{
+  "task": ["feature", "bugfix", "refactor", "test", "docs"],
+  "stack": ["typescript", "python", "react", "electron", "csharp"],
+  "capability": ["github", "database", "browser_test", "api_docs", "security_scan"],
+  "stage": ["plan", "implement", "review", "fix"]
+}
