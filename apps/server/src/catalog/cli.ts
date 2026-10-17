@@ -16,6 +16,12 @@ import { watchPages } from './watch.ts';
 const root = fileURLToPath(new URL('../../catalog/', import.meta.url));
 const [cmd, arg] = process.argv.slice(2);
 
+// 키가 없으면 항목마다 '오류'만 쌓이고 그 결과로 PR이 열린다(2026-10-17 Actions 시험). 시작할 때 실패시킨다.
+if ((cmd === 'crawl' || cmd === 'seed' || cmd === 'eval-review') && !process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN) {
+  console.error('ANTHROPIC_API_KEY is not set (Actions: repository secret ANTHROPIC_API_KEY)');
+  process.exit(2);
+}
+
 if ((cmd === 'crawl' && (arg === 'mcp' || arg === 'skill')) || (cmd === 'seed' && arg === 'mcp')) {
   const now = new Date();
   const env = { http: fetch, ask: claudeAsk(new Anthropic()), now, root, token: process.env.GITHUB_TOKEN, lock: lockDeps };
