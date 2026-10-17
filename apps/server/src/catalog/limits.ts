@@ -11,4 +11,4 @@ export const MAX_NEW_PER_RUN = { mcp: 10, skill: 30 } as const;
 export const SKILL_TEXT_LIMIT = 64 * 1024;
 export const SKILL_TEXT_EXT = ['.md', '.txt'];
 
-export const MODEL = 'claude-opus-5-5';
+export const MODEL = 'claude-haiku-5-5'; // 사용자 결정(2026-10-17). 판정이 흔들리면 이 값만 바꾼다

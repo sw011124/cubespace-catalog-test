@@ -11,8 +11,7 @@ export function claudeAsk(client = new Anthropic()): Ask {
     const r = await client.beta.messages.create({
       model: MODEL,
       max_tokens: 16000,
-      betas: ['server-side-fallback-2026-07-01'],
-      fallbacks: 'default',
+      // Haiku 5.5는 서버 쪽 대체 모델(fallbacks)이 없다. 거절은 아래에서 warn으로 사람에게 넘긴다.
       output_config: { effort: 'high', format: { type: 'json_schema', schema } },
       system,
       messages: [{ role: 'user', content: user }],
