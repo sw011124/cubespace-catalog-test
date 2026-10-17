@@ -21,12 +21,19 @@ if ((cmd === 'crawl' || cmd === 'seed' || cmd === 'eval-review') && !process.env
   console.error('ANTHROPIC_API_KEY is not set (Actions: repository secret ANTHROPIC_API_KEY)');
   process.exit(2);
 }
+// 공백·줄바꿈이 든 키는 SDK가 헤더 오류를 내면서 값을 메시지에 그대로 넣고, 그 메시지가 PR 본문에 실린다. 값은 찍지 않고 멈춘다.
+for (const k of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'GITHUB_TOKEN']) {
+  if (/\s/.test(process.env[k] ?? '')) { console.error(`${k} contains whitespace; set the secret to the bare value`); process.exit(2); }
+}
+// 그래도 비밀 값이 오류 문구에 섞여 나오면 PR 본문에 쓰기 전에 가린다.
+const secrets = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'GITHUB_TOKEN'].map((k) => process.env[k]).filter((v): v is string => !!v && v.length >= 8);
+const redact = (t: string) => secrets.reduce((s, v) => s.replaceAll(v, '***'), t);
 
 if ((cmd === 'crawl' && (arg === 'mcp' || arg === 'skill')) || (cmd === 'seed' && arg === 'mcp')) {
   const now = new Date();
   const env = { http: fetch, ask: claudeAsk(new Anthropic()), now, root, token: process.env.GITHUB_TOKEN, lock: lockDeps };
   const s = await crawl(arg, env, cmd === 'seed' ? process.argv.slice(4) : undefined);
-  process.stdout.write(summaryMarkdown(s, now.toISOString().slice(0, 10)));
+  process.stdout.write(redact(summaryMarkdown(s, now.toISOString().slice(0, 10))));
 } else if (cmd === 'watch') {
   const changed = await watchPages(fetch, join(root, 'watch.json'), process.argv.includes('--update'));
   process.stdout.write(changed.map((u) => `- ${u}\n`).join(''));
