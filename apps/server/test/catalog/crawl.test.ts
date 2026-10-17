@@ -225,6 +225,15 @@ describe('crawl mcp', () => {
     expect(JSON.parse(readFileSync(join(root, 'items', 'mcp', 'io-github-acme-gh.json'), 'utf8')).scorecard).toBeNull();
   });
 
+  it('stops the whole run on a Claude authentication error instead of piling up one error per item', async () => {
+    const root = mcpRoot();
+    const routes = mcpRoutes([{ name: 'io.github.acme/a', stars: 300 }, { name: 'io.github.acme/b', stars: 300 }], tarball());
+    let asked = 0;
+    const ask: Ask = async () => { asked++; throw Object.assign(new Error('401 invalid x-api-key'), { status: 401 }); };
+    await expect(crawl('mcp', { ...env(root, routes, []), ask })).rejects.toThrow('401');
+    expect(asked).toBe(1);
+  });
+
   it('lists the new chips the tagger proposed, once each, as code spans', async () => {
     const root = mcpRoot();
     const routes = mcpRoutes([{ name: 'io.github.acme/a', stars: 300 }, { name: 'io.github.acme/b', stars: 300 }], tarball());

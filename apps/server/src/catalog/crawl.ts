@@ -48,6 +48,8 @@ function loadItems(root: string, kind: Kind): Map<string, Item> {
 }
 
 const noteOf = (id: string, version: string, reasons: string[]): Note => ({ id, version, reasons });
+// Claude 키가 틀리거나 권한이 없으면(SDK 오류의 status 401·403) 모든 항목이 같은 오류다. 첫 번째에서 실행 전체를 멈춘다.
+const authError = (e: unknown) => [401, 403].includes((e as { status?: unknown }).status as number);
 
 // seeds가 있으면(mcp만) 기준 시각과 상관없이 그 서버들만 보고, 기준 시각이 비어 있으면 지금으로 정한다.
 // seed도 기준 시각도 없이 돌면 Registry 전체를 처음부터 알파벳 순으로 검토하게 되므로, 아무것도 쓰지 않고 seed부터 하라고만 남긴다.
@@ -110,6 +112,7 @@ export async function crawl(kind: Kind, env: Env, seeds?: string[]): Promise<Sum
       try {
         await mcpOne(base, c, id, cur);
       } catch (e) {
+        if (authError(e)) throw e;
         const msg = (e as Error).message;
         // 패키지 자체가 기준에 못 미치면 다시 봐도 같으니 기준 미달로 남긴다. 그 밖의 오류만 기준 시각을 멈춘다.
         if (e instanceof BadPackage) { remember(id, c.version, 'drop', [msg]); continue; }
@@ -143,6 +146,7 @@ export async function crawl(kind: Kind, env: Env, seeds?: string[]): Promise<Sum
         try {
           await skillOne(base, repo, repoFacts, d, id, cur);
         } catch (e) {
+          if (authError(e)) throw e;
           s.errors.push(noteOf(id, d.treeSha, [(e as Error).message]));
         }
       }
